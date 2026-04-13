@@ -1,0 +1,149 @@
+import Cocoa
+
+/// Hides third-party menu bar icons using Ice's technique:
+/// An invisible NSStatusItem at position 1 (just left of our app icon at position 0)
+/// expands to 10,000pt, pushing all third-party items to its left off screen.
+///
+/// Layout (left → right on screen):
+/// [Third-party items...] [ControlItem(expanded 10,000pt)] [OurAppIcon(pos=0)] [SystemItems]
+///
+/// Reference: github.com/jordanbaird/Ice
+@MainActor
+class StatusBarHider {
+    private var controlItem: NSStatusItem?
+    private var isActive = false
+    private var isTemporarilyShowing = false
+    private var timer: Timer?
+
+    // MARK: - Public
+
+    func startHiding() {
+        guard !isActive else { return }
+
+        // Set preferred position BEFORE creating the status item (like Ice).
+        // Position 1 = just left of our app icon (position 0).
+        let hiderKey = "NSStatusItem Preferred Position MBPHider"
+        // Always set to correct value (clear old wrong values)
+        UserDefaults.standard.set(CGFloat(1), forKey: hiderKey)
+
+        createControlItem()
+        isActive = true
+
+        // Expand after delay to let macOS position the item first
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            self?.expand()
+        }
+
+        // Periodically re-apply to catch new/reappearing items
+        timer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, !self.isTemporarilyShowing else { return }
+                self.expand()
+            }
+        }
+    }
+
+    func stopHiding() {
+        guard isActive else { return }
+        timer?.invalidate()
+        timer = nil
+        collapse()
+        removeControlItem()
+        isActive = false
+    }
+
+    func temporarilyShow() {
+        isTemporarilyShowing = true
+        collapse()
+    }
+
+    func reHide() {
+        isTemporarilyShowing = false
+        expand()
+    }
+
+    // MARK: - Control Item (Ice pattern)
+
+    private func createControlItem() {
+        // Ice uses withLength: 0 initially
+        let item = NSStatusBar.system.statusItem(withLength: 0)
+        item.autosaveName = "MBPHider"
+
+        if let button = item.button {
+            button.image = nil
+            button.title = ""
+            button.isEnabled = false
+            button.isBordered = false
+            button.isHighlighted = false
+            button.cell?.isEnabled = false
+        }
+
+        controlItem = item
+
+        // Debug: write to file
+        var debug = "=== Control Item Created ===\n"
+        debug += "autosaveName: \(item.autosaveName ?? "nil")\n"
+        debug += "preferredPosition: \(String(describing: UserDefaults.standard.object(forKey: "NSStatusItem Preferred Position MBPHider")))\n"
+        if let w = item.button?.window {
+            debug += "window frame: \(w.frame)\n"
+        }
+        debug += "main icon preferredPosition: \(String(describing: UserDefaults.standard.object(forKey: "NSStatusItem Preferred Position MBPIcon")))\n"
+        writeDebug(debug)
+    }
+
+    private func expand() {
+        guard let item = controlItem else { return }
+
+        // Debug: log positions before expanding
+        logMenuBarLayout()
+
+        item.length = 10_000
+
+        // Debug: log positions after expanding
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            self.logMenuBarLayout()
+        }
+    }
+
+    private func logMenuBarLayout() {
+        guard let button = controlItem?.button,
+              let window = button.window else { return }
+
+        var debug = "--- Layout at \(Date()) ---\n"
+        debug += "hider window frame: \(window.frame)\n"
+
+        let items = AppState.shared.menuBarItems
+        debug += "discovered items: \(items.count)\n"
+        for item in items {
+            debug += "  '\(item.displayName)' frame=\(item.frame) wid=\(item.windowID)\n"
+        }
+        writeDebug(debug)
+    }
+
+    private func writeDebug(_ text: String) {
+        let path = "/tmp/mbp_debug.txt"
+        if let handle = FileHandle(forWritingAtPath: path) {
+            handle.seekToEndOfFile()
+            handle.write((text + "\n").data(using: .utf8)!)
+            handle.closeFile()
+        } else {
+            try? text.data(using: .utf8)?.write(to: URL(fileURLWithPath: path))
+        }
+    }
+
+    private func collapse() {
+        controlItem?.length = NSStatusItem.variableLength
+    }
+
+    private func removeControlItem() {
+        if let item = controlItem {
+            // Cache preferred position before removal (macOS deletes it on remove)
+            let key = "NSStatusItem Preferred Position MBPHider"
+            let cached = UserDefaults.standard.object(forKey: key) as? CGFloat
+            NSStatusBar.system.removeStatusItem(item)
+            controlItem = nil
+            // Restore
+            if let cached { UserDefaults.standard.set(cached, forKey: key) }
+        }
+    }
+}
