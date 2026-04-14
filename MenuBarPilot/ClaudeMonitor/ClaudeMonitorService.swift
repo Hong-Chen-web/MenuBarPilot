@@ -12,6 +12,7 @@ class ClaudeMonitorService: ObservableObject {
     private var sessionDirectoryWatcher: DispatchSourceFileSystemObject?
     private var pollingTimer: Timer?
     private let sessionsDirectory: URL
+    private var fastPollingActive = false
 
     private let notificationManager = ClaudeNotificationManager()
 
@@ -23,14 +24,7 @@ class ClaudeMonitorService: ObservableObject {
     // MARK: - Debug Logging
 
     private func log(_ message: String) {
-        let line = "[ClaudeMonitor] \(message)\n"
-        if let handle = FileHandle(forWritingAtPath: "/tmp/mbp_debug.txt") {
-            handle.seekToEndOfFile()
-            handle.write(line.data(using: .utf8)!)
-            handle.closeFile()
-        } else {
-            try? line.data(using: .utf8)?.write(to: URL(fileURLWithPath: "/tmp/mbp_debug.txt"))
-        }
+        PerfLogger.log("[ClaudeMonitor] \(message)")
     }
 
     // MARK: - Start / Stop
@@ -39,6 +33,30 @@ class ClaudeMonitorService: ObservableObject {
         discoverExistingSessions()
         watchSessionsDirectory()
         startPolling()
+    }
+
+    /// Switch to fast polling (every 2s) when at least one session is running.
+    @MainActor private func updatePollingSpeed() {
+        let hasActive = sessions.contains { $0.state == .running || $0.state == .idle }
+        if hasActive && !fastPollingActive {
+            fastPollingActive = true
+            pollingTimer?.invalidate()
+            pollingTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+                Task { @MainActor in
+                    self?.pollSessions()
+                }
+            }
+            log("switched to fast polling (2s)")
+        } else if !hasActive && fastPollingActive {
+            fastPollingActive = false
+            pollingTimer?.invalidate()
+            pollingTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
+                Task { @MainActor in
+                    self?.pollSessions()
+                }
+            }
+            log("switched to slow polling (5s)")
+        }
     }
 
     func stopMonitoring() {
@@ -134,7 +152,7 @@ class ClaudeMonitorService: ObservableObject {
         )
 
         source.setEventHandler { [weak self] in
-            Task { @MainActor in
+            DispatchQueue.main.async {
                 self?.handleSessionsDirectoryChange()
             }
         }
@@ -194,7 +212,7 @@ class ClaudeMonitorService: ObservableObject {
         )
 
         source.setEventHandler { [weak self] in
-            Task { @MainActor in
+            DispatchQueue.main.async {
                 self?.handleLogChange(sessionId: session.id)
             }
         }
@@ -214,9 +232,12 @@ class ClaudeMonitorService: ObservableObject {
         guard let index = sessions.firstIndex(where: { $0.id == sessionId }) else { return }
         let session = sessions[index]
 
-        let entries = SessionLogParser.parseLastEntries(from: session.logFilePath, count: 20)
+        let entries = SessionLogParser.parseLastEntries(from: session.logFilePath, count: 50)
         let newState = SessionLogParser.detectState(from: entries)
-        log("handleLogChange: pid=\(session.pid) parsed=\(entries.count) entries → \(newState.rawValue)")
+
+        // Log last few entries for debugging
+        let lastTypes = entries.suffix(5).map { "\($0.type)" + ($0.toolNames.isEmpty ? "" : "(\($0.toolNames.joined(separator: ",")))") }.joined(separator: " → ")
+        log("handleLogChange: pid=\(session.pid) parsed=\(entries.count) entries → \(newState.rawValue) | tail: \(lastTypes)")
 
         let oldState = session.state
         sessions[index] = ClaudeSession(
@@ -241,6 +262,7 @@ class ClaudeMonitorService: ObservableObject {
         }
 
         updateAttentionState()
+        updatePollingSpeed()
     }
 
     private func reasonForState(_ state: ClaudeSessionState) -> String {
@@ -272,6 +294,8 @@ class ClaudeMonitorService: ObservableObject {
     }
 
     private func pollSessions() {
+        let start = CFAbsoluteTimeGetCurrent()
+
         // Remove dead sessions
         let before = sessions.count
         sessions.removeAll { !$0.isProcessAlive }
@@ -320,5 +344,9 @@ class ClaudeMonitorService: ObservableObject {
         }
 
         updateAttentionState()
+        updatePollingSpeed()
+
+        let elapsed = (CFAbsoluteTimeGetCurrent() - start) * 1000
+        PerfLogger.log("[POLL] pollSessions took \(String(format: "%.1f", elapsed))ms, \(sessions.count) sessions")
     }
 }

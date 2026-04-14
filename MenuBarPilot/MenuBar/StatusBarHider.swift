@@ -121,14 +121,7 @@ class StatusBarHider {
     }
 
     private func writeDebug(_ text: String) {
-        let path = "/tmp/mbp_debug.txt"
-        if let handle = FileHandle(forWritingAtPath: path) {
-            handle.seekToEndOfFile()
-            handle.write((text + "\n").data(using: .utf8)!)
-            handle.closeFile()
-        } else {
-            try? text.data(using: .utf8)?.write(to: URL(fileURLWithPath: path))
-        }
+        PerfLogger.log("[StatusBarHider] \(text)")
     }
 
     private func collapse() {

@@ -185,13 +185,5 @@ struct IconRow: View {
 }
 
 private func writeDebug(_ text: String) {
-    let path = "/tmp/mbp_debug.txt"
-    let line = text + "\n"
-    if let handle = FileHandle(forWritingAtPath: path) {
-        handle.seekToEndOfFile()
-        handle.write(line.data(using: .utf8)!)
-        handle.closeFile()
-    } else {
-        try? line.data(using: .utf8)?.write(to: URL(fileURLWithPath: path))
-    }
+    PerfLogger.log(text)
 }

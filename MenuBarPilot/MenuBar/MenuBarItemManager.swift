@@ -8,7 +8,8 @@ class MenuBarItemManager: ObservableObject {
     @Published var hasAccessibilityPermission = false
 
     private var timer: Timer?
-    private let pollingInterval: TimeInterval = 3.0
+    private let pollingInterval: TimeInterval = 5.0  // increased from 3.0s to reduce contention
+    private var isRefreshing = false  // prevent overlapping refreshes
 
     func startDiscovering() {
         checkAccessibilityPermission()
@@ -39,7 +40,14 @@ class MenuBarItemManager: ObservableObject {
     // MARK: - Discovery
 
     func refreshItems() {
+        // Skip if previous refresh is still running (prevents timer pile-up)
+        guard !isRefreshing else { return }
+        isRefreshing = true
+        defer { isRefreshing = false }
+
         hasAccessibilityPermission = AXIsProcessTrusted()
+
+        let start = CFAbsoluteTimeGetCurrent()
 
         var items: [MenuBarItem] = []
 
@@ -70,6 +78,9 @@ class MenuBarItemManager: ObservableObject {
 
         items.sort { $0.frame.origin.x < $1.frame.origin.x }
         discoveredItems = items
+
+        let elapsed = (CFAbsoluteTimeGetCurrent() - start) * 1000
+        PerfLogger.log("[DISCOVERY] refreshItems took \(String(format: "%.1f", elapsed))ms, found \(items.count) items")
     }
 
     // MARK: - AX Discovery
@@ -205,14 +216,6 @@ class MenuBarItemManager: ObservableObject {
     }
 
     private func writeDebug(_ text: String) {
-        let path = "/tmp/mbp_debug.txt"
-        let line = text + "\n"
-        if let handle = FileHandle(forWritingAtPath: path) {
-            handle.seekToEndOfFile()
-            handle.write(line.data(using: .utf8)!)
-            handle.closeFile()
-        } else {
-            try? line.data(using: .utf8)?.write(to: URL(fileURLWithPath: path))
-        }
+        PerfLogger.log("[MenuBarItem] \(text)")
     }
 }

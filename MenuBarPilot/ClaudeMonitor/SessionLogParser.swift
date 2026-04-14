@@ -54,7 +54,7 @@ struct SessionLogParser {
     }
 
     /// Parse the last N entries from a JSONL file
-    static func parseLastEntries(from filePath: String, count: Int = 20) -> [LogEntry] {
+    static func parseLastEntries(from filePath: String, count: Int = 50) -> [LogEntry] {
         guard let content = try? String(contentsOfFile: filePath, encoding: .utf8) else {
             return []
         }
@@ -85,6 +85,13 @@ struct SessionLogParser {
             return .idle
         }
 
+        // First, scan backwards for an unanswered AskUserQuestion.
+        // This handles the race condition where the user responds quickly
+        // and both AskUserQuestion + tool_result are written before we read.
+        if hasPendingAskUserQuestion(in: meaningful) {
+            return .waitingForInput
+        }
+
         switch last.type {
         case "assistant":
             return detectAssistantState(last)
@@ -111,6 +118,33 @@ struct SessionLogParser {
         default:
             return .idle
         }
+    }
+
+    /// Scan the last several entries for an AskUserQuestion that hasn't been
+    /// answered yet. Handles the case where the JSONL splits assistant messages
+    /// across multiple lines (thinking → text → tool_use), and the file watcher
+    /// fires before all lines are written.
+    private static func hasPendingAskUserQuestion(in entries: [LogEntry]) -> Bool {
+        // Scan the last 10 meaningful entries backwards
+        let scanRange = max(0, entries.count - 10)
+        for i in stride(from: entries.count - 1, through: scanRange, by: -1) {
+            let entry = entries[i]
+
+            // Found an AskUserQuestion tool_use
+            if entry.type == "assistant" && entry.toolNames.contains("AskUserQuestion") {
+                // Check if the very next entry is a user tool_result (already answered)
+                // If there's no next entry, it's still pending → waiting
+                if i + 1 < entries.count {
+                    let next = entries[i + 1]
+                    if next.type == "user" && next.isToolResult {
+                        // Already answered — keep scanning backwards
+                        continue
+                    }
+                }
+                return true
+            }
+        }
+        return false
     }
 
     /// Determine state from an assistant log entry.

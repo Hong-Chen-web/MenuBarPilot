@@ -23,6 +23,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var animationTimer: Timer?
     private var globalClickMonitor: Any?
 
+    // MARK: - Pre-rendered animation frame cache
+    /// 20 frames × 3 colors (green, orange, red) = 60 cached images
+    private var frameCache: [String: NSImage] = [:]
+    private let animationColors: [NSColor] = [.systemGreen, .systemOrange, .systemRed]
+    private let colorKeys: [String] = ["green", "orange", "red"]
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         let iconKey = "NSStatusItem Preferred Position MBPIcon"
         if UserDefaults.standard.object(forKey: iconKey) == nil {
@@ -40,6 +46,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         updateIcon()
+
+        // Pre-render all animation frames for all 3 colors
+        preRenderAllFrames()
 
         popover = NSPopover()
         popover.contentSize = NSSize(width: 340, height: 500)
@@ -73,11 +82,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             .store(in: &cancellables)
 
         // Animation timer — 20 steps across pill, legs cycle every 4
+        var frameCounter = 0
         animationTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
+                let start = CFAbsoluteTimeGetCurrent()
                 self.animationFrame = (self.animationFrame + 1) % 20
                 self.updateIcon()
+                let elapsed = (CFAbsoluteTimeGetCurrent() - start) * 1000
+
+                frameCounter += 1
+                // Log every 100 frames (~15 seconds) to avoid log spam
+                if frameCounter % 100 == 0 {
+                    PerfLogger.log("[ANIM] updateIcon took \(String(format: "%.2f", elapsed))ms (frame #\(frameCounter))")
+                    PerfLogger.reportMemory(context: "animation-tick")
+                }
             }
         }
     }
@@ -112,21 +131,104 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Custom Robot Icon
 
+    /// Pre-render all 60 frames (20 animation steps × 3 colors) once at startup.
+    @MainActor private func preRenderAllFrames() {
+        let start = CFAbsoluteTimeGetCurrent()
+        let w: CGFloat = 116
+        let h: CGFloat = 22
+
+        for (colorIdx, color) in animationColors.enumerated() {
+            let key = colorKeys[colorIdx]
+            for frame in 0..<20 {
+                let cacheKey = "\(key)-\(frame)"
+                let image = NSImage(size: NSSize(width: w, height: h))
+                image.lockFocus()
+
+                guard let ctx = NSGraphicsContext.current?.cgContext else {
+                    image.unlockFocus()
+                    continue
+                }
+
+                // Pill background
+                let pill = CGRect(x: 0, y: 0, width: w, height: h)
+                ctx.addPath(CGPath(roundedRect: pill, cornerWidth: h / 2, cornerHeight: h / 2, transform: nil))
+                ctx.setFillColor(NSColor(white: 0.08, alpha: 1.0).cgColor)
+                ctx.fillPath()
+
+                ctx.setFillColor(color.cgColor)
+
+                let px: CGFloat = 1.8
+                let gridW = 9 * px
+                let gridH = 3 * px
+                let oy = (h - gridH) / 2
+                let totalSteps: CGFloat = 20
+                let step = CGFloat(frame % 20)
+                let ox = step / totalSteps * (w - gridW)
+
+                // Row 2 (top): ▐▛███▜▌ — 7 filled, offset by 1 col
+                for c in 1...7 { fillPx(ctx, ox, oy, c, 2, px) }
+
+                // Row 1 (mid): ▝▜█████▛▘ — 9 filled
+                for c in 0...8 { fillPx(ctx, ox, oy, c, 1, px) }
+
+                // Row 0 (bot): legs
+                let legFrame = frame % 4
+                switch legFrame {
+                case 0:
+                    fillPx(ctx, ox, oy, 0, 0, px)
+                    fillPx(ctx, ox, oy, 1, 0, px)
+                    fillPx(ctx, ox, oy, 7, 0, px)
+                    fillPx(ctx, ox, oy, 8, 0, px)
+                case 1:
+                    fillPx(ctx, ox, oy, 3, 0, px)
+                    fillPx(ctx, ox, oy, 4, 0, px)
+                    fillPx(ctx, ox, oy, 5, 0, px)
+                case 2:
+                    fillPx(ctx, ox, oy, 0, 0, px)
+                    fillPx(ctx, ox, oy, 1, 0, px)
+                    fillPx(ctx, ox, oy, 7, 0, px)
+                    fillPx(ctx, ox, oy, 8, 0, px)
+                default:
+                    fillPx(ctx, ox, oy, 3, 0, px)
+                    fillPx(ctx, ox, oy, 4, 0, px)
+                    fillPx(ctx, ox, oy, 5, 0, px)
+                }
+
+                image.unlockFocus()
+                frameCache[cacheKey] = image
+            }
+        }
+
+        let elapsed = (CFAbsoluteTimeGetCurrent() - start) * 1000
+        PerfLogger.log("preRenderAllFrames: cached \(frameCache.count) frames in \(String(format: "%.1f", elapsed))ms")
+    }
+
     @MainActor private func updateIcon() {
         guard let button = self.statusItem.button else { return }
 
-        let hasSessions = !self.appState.claudeSessions.isEmpty
-
-        let color: NSColor
+        let colorKey: String
         if self.appState.claudeNeedsAttention {
-            color = .systemRed
+            colorKey = "red"
         } else if self.appState.claudeIsWorking {
-            color = .systemOrange
+            colorKey = "orange"
         } else {
-            color = .systemGreen
+            colorKey = "green"
         }
 
-        button.image = self.createRobotPill(color: color, frame: self.animationFrame)
+        let cacheKey = "\(colorKey)-\(self.animationFrame)"
+
+        if let cached = frameCache[cacheKey] {
+            button.image = cached
+        } else {
+            // Fallback: render on-the-fly (shouldn't happen normally)
+            let color: NSColor
+            switch colorKey {
+            case "red": color = .systemRed
+            case "orange": color = .systemOrange
+            default: color = .systemGreen
+            }
+            button.image = self.createRobotPill(color: color, frame: self.animationFrame)
+        }
     }
 
     /// Robot body (unchanged, the user's original design):
