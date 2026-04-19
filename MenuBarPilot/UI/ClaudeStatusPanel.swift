@@ -68,6 +68,7 @@ struct ClaudeStatusPanel: View {
 }
 
 struct ClaudeSessionRow: View {
+    @EnvironmentObject var appState: AppState
     let session: ClaudeSession
 
     var body: some View {
@@ -136,6 +137,8 @@ struct ClaudeSessionRow: View {
 
     /// Bring the terminal window running this Claude Code session to front.
     private func activateSession() {
+        appState.claudeMonitor.markAttentionHandled(for: session.id)
+
         // Close popover first
         NotificationCenter.default.post(name: .closePopover, object: nil)
 

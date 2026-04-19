@@ -125,23 +125,21 @@ struct SessionLogParser {
     /// across multiple lines (thinking → text → tool_use), and the file watcher
     /// fires before all lines are written.
     private static func hasPendingAskUserQuestion(in entries: [LogEntry]) -> Bool {
-        // Scan the last 10 meaningful entries backwards
+        // Scan the last 10 meaningful entries backwards.
+        // If we saw any later user activity, treat the older AskUserQuestion
+        // as already handled even when bookkeeping lines were written between them.
         let scanRange = max(0, entries.count - 10)
+        var sawUserResponseAfterAsk = false
         for i in stride(from: entries.count - 1, through: scanRange, by: -1) {
             let entry = entries[i]
 
-            // Found an AskUserQuestion tool_use
+            if entry.type == "user" {
+                sawUserResponseAfterAsk = true
+                continue
+            }
+
             if entry.type == "assistant" && entry.toolNames.contains("AskUserQuestion") {
-                // Check if the very next entry is a user tool_result (already answered)
-                // If there's no next entry, it's still pending → waiting
-                if i + 1 < entries.count {
-                    let next = entries[i + 1]
-                    if next.type == "user" && next.isToolResult {
-                        // Already answered — keep scanning backwards
-                        continue
-                    }
-                }
-                return true
+                return !sawUserResponseAfterAsk
             }
         }
         return false

@@ -3,6 +3,7 @@ import UserNotifications
 
 /// Manages macOS notifications for Claude Code state changes.
 class ClaudeNotificationManager: NSObject, UNUserNotificationCenterDelegate {
+    var onSessionActivated: ((String) -> Void)?
 
     override init() {
         super.init()
@@ -38,6 +39,12 @@ class ClaudeNotificationManager: NSObject, UNUserNotificationCenterDelegate {
         }
     }
 
+    func clearNotification(sessionId: String) {
+        let identifier = "claude-\(sessionId)"
+        UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: [identifier])
+        UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: [identifier])
+    }
+
     // Show notification even when app is in foreground
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
@@ -55,6 +62,9 @@ class ClaudeNotificationManager: NSObject, UNUserNotificationCenterDelegate {
     ) {
         let userInfo = response.notification.request.content.userInfo
         if let sessionId = userInfo["sessionId"] as? String {
+            DispatchQueue.main.async { [weak self] in
+                self?.onSessionActivated?(sessionId)
+            }
             activateTerminal(for: sessionId)
         }
         completionHandler()

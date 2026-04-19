@@ -13,12 +13,18 @@ class ClaudeMonitorService: ObservableObject {
     private var pollingTimer: Timer?
     private let sessionsDirectory: URL
     private var fastPollingActive = false
+    private var acknowledgedAttentionSessionIDs = Set<String>()
 
     private let notificationManager = ClaudeNotificationManager()
 
     init() {
         sessionsDirectory = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".claude/sessions")
+        notificationManager.onSessionActivated = { [weak self] sessionId in
+            Task { @MainActor in
+                self?.markAttentionHandled(for: sessionId)
+            }
+        }
     }
 
     // MARK: - Debug Logging
@@ -252,8 +258,15 @@ class ClaudeMonitorService: ObservableObject {
             waitingReason: newState.needsAttention ? reasonForState(newState) : nil
         )
 
-        // Notify if state changed to needing attention
-        if newState.needsAttention && !oldState.needsAttention {
+        if !newState.needsAttention {
+            acknowledgedAttentionSessionIDs.remove(session.id)
+            notificationManager.clearNotification(sessionId: session.id)
+        }
+
+        // Notify only on a fresh waiting cycle that hasn't already been handled.
+        if newState.needsAttention &&
+            !oldState.needsAttention &&
+            !acknowledgedAttentionSessionIDs.contains(session.id) {
             notificationManager.sendNotification(
                 title: "Claude Code Needs Attention",
                 body: reasonForState(newState) + " in \(session.cwd)",
@@ -280,6 +293,12 @@ class ClaudeMonitorService: ObservableObject {
         let attentionSessions = sessions.filter { $0.state.needsAttention }
         pendingCount = attentionSessions.count
         needsAttention = !attentionSessions.isEmpty
+    }
+
+    func markAttentionHandled(for sessionId: String) {
+        acknowledgedAttentionSessionIDs.insert(sessionId)
+        notificationManager.clearNotification(sessionId: sessionId)
+        log("markAttentionHandled: sessionId=\(sessionId.prefix(8))...")
     }
 
     // MARK: - Polling Fallback
@@ -333,7 +352,14 @@ class ClaudeMonitorService: ObservableObject {
                     waitingReason: newState.needsAttention ? reasonForState(newState) : nil
                 )
 
-                if newState.needsAttention && !oldState.needsAttention {
+                if !newState.needsAttention {
+                    acknowledgedAttentionSessionIDs.remove(sessions[i].id)
+                    notificationManager.clearNotification(sessionId: sessions[i].id)
+                }
+
+                if newState.needsAttention &&
+                    !oldState.needsAttention &&
+                    !acknowledgedAttentionSessionIDs.contains(sessions[i].id) {
                     notificationManager.sendNotification(
                         title: "Claude Code Needs Attention",
                         body: reasonForState(newState) + " in \(sessions[i].cwd)",

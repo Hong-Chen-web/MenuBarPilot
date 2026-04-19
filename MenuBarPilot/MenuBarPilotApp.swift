@@ -22,6 +22,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var animationFrame = 0
     private var animationTimer: Timer?
     private var globalClickMonitor: Any?
+    private var lastPendingAttentionCount = 0
 
     // MARK: - Pre-rendered animation frame cache
     /// 20 frames × 3 colors (green, orange, red) = 60 cached images
@@ -69,14 +70,26 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         Publishers.CombineLatest(appState.$claudeIsWorking, appState.$claudeNeedsAttention)
+            .removeDuplicates { lhs, rhs in
+                lhs.0 == rhs.0 && lhs.1 == rhs.1
+            }
             .receive(on: RunLoop.main)
-            .sink { [weak self] (_, needsAttention) in
+            .sink { [weak self] _ in
                 self?.updateIcon()
-                if needsAttention {
-                    self?.appState.activeTab = .claude
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                        self?.showPopover()
-                    }
+            }
+            .store(in: &cancellables)
+
+        appState.$pendingAttentionCount
+            .removeDuplicates()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] count in
+                guard let self else { return }
+                defer { self.lastPendingAttentionCount = count }
+
+                guard count > self.lastPendingAttentionCount else { return }
+                self.appState.activeTab = .claude
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    self.showPopover()
                 }
             }
             .store(in: &cancellables)
