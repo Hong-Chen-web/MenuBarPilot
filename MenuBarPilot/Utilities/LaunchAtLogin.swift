@@ -11,7 +11,7 @@ enum LaunchAtLogin {
         do {
             try SMAppService.mainApp.register()
         } catch {
-            print("Failed to enable launch at login: \(error)")
+            PerfLogger.log("[LaunchAtLogin] enable failed: \(error)")
         }
     }
 
@@ -19,7 +19,7 @@ enum LaunchAtLogin {
         do {
             try SMAppService.mainApp.unregister()
         } catch {
-            print("Failed to disable launch at login: \(error)")
+            PerfLogger.log("[LaunchAtLogin] disable failed: \(error)")
         }
     }
 

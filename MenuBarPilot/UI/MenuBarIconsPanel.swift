@@ -7,12 +7,35 @@ struct IconsPanel: View {
 
     var body: some View {
         Group {
-            if appState.menuBarItems.isEmpty {
+            if !appState.hasAccessibilityPermission {
+                permissionView
+            } else if appState.menuBarItems.isEmpty {
                 scanningView
             } else {
                 itemList
             }
         }
+    }
+
+    private var permissionView: some View {
+        VStack(spacing: 12) {
+            Spacer()
+            Image(systemName: "hand.raised.fill")
+                .font(.system(size: 28))
+                .foregroundStyle(.secondary)
+            Text("Accessibility Access Needed")
+                .font(.system(size: 14, weight: .medium))
+            Text("Grant Accessibility access so MenuBarPilot can discover and click menu bar extras.")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 18)
+            Button("Open Accessibility Settings") {
+                appState.menuBarItemManager.requestAccessibilityPermission()
+            }
+            Spacer()
+        }
+        .frame(maxWidth: .infinity)
     }
 
     private var scanningView: some View {
@@ -34,34 +57,18 @@ struct IconsPanel: View {
                     IconRow(
                         item: item,
                         onTap: {
-                            let pid = item.ownerPID
-                            let name = item.displayName
-                            writeDebug("[IconClick] tap: pid=\(pid) name=\(name)")
-
-                            guard let runningApp = NSRunningApplication(processIdentifier: pid) else {
-                                writeDebug("[IconClick] no NSRunningApplication for pid=\(pid)")
-                                return
-                            }
-
+                            writeDebug("[IconClick] tap: pid=\(item.ownerPID) name=\(item.displayName)")
+                            appState.showMenuBarItems()
                             // Close popover first
                             NotificationCenter.default.post(name: .closePopover, object: nil)
 
                             DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                                if let bid = runningApp.bundleIdentifier {
-                                    writeDebug("[IconClick] pid=\(pid) bundle=\(bid) policy=\(runningApp.activationPolicy.rawValue)")
-                                    if runningApp.activationPolicy == .regular {
-                                        runningApp.activate(options: .activateIgnoringOtherApps)
-                                    } else {
-                                        // Accessory apps: find parent GUI app
-                                        if let url = runningApp.bundleURL {
-                                            NSWorkspace.shared.open(url)
-                                        }
-                                    }
-                                } else {
-                                    writeDebug("[IconClick] pid=\(pid) no bundleID, trying open()")
-                                    if let url = runningApp.bundleURL {
-                                        NSWorkspace.shared.open(url)
-                                    }
+                                let pressed = pressMenuBarItem(item)
+                                if !pressed {
+                                    clickAtPoint(CGPoint(x: item.frame.midX, y: item.frame.midY))
+                                }
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                                    appState.hideMenuBarItems()
                                 }
                             }
                         }
@@ -87,17 +94,18 @@ struct IconsPanel: View {
 
     /// Use AXPress to directly activate a menu bar item via Accessibility API.
     /// More reliable than coordinate-based clicking.
-    private func pressMenuBarItem(pid: pid_t) -> Bool {
-        let el = AXUIElementCreateApplication(pid)
+    private func pressMenuBarItem(_ item: MenuBarItem) -> Bool {
+        let el = AXUIElementCreateApplication(item.ownerPID)
         var value: AnyObject?
         let r = AXUIElementCopyAttributeValue(el, "AXExtrasMenuBar" as CFString, &value)
         guard r == .success, let bar = value else {
-            writeDebug("  AXPress: no AXExtrasMenuBar for pid \(pid)")
+            writeDebug("  AXPress: no AXExtrasMenuBar for pid \(item.ownerPID)")
             return false
         }
+        let barElement = unsafeBitCast(bar, to: AXUIElement.self)
 
         var children: AnyObject?
-        AXUIElementCopyAttributeValue(bar as! AXUIElement, kAXChildrenAttribute as CFString, &children)
+        AXUIElementCopyAttributeValue(barElement, kAXChildrenAttribute as CFString, &children)
         guard let kids = children as? [AXUIElement] else {
             writeDebug("  AXPress: no children")
             return false
@@ -105,14 +113,30 @@ struct IconsPanel: View {
 
         writeDebug("  AXPress: found \(kids.count) children")
 
-        // Press the first child (the menu bar item)
-        if let first = kids.first {
-            let pressResult = AXUIElementPerformAction(first, "AXPress" as CFString)
+        let bestMatch = kids.min { lhs, rhs in
+            abs(xPosition(for: lhs) - item.frame.minX) < abs(xPosition(for: rhs) - item.frame.minX)
+        }
+
+        if let bestMatch {
+            let pressResult = AXUIElementPerformAction(bestMatch, "AXPress" as CFString)
             writeDebug("  AXPress: result=\(pressResult.rawValue)")
             return pressResult == .success
         }
 
         return false
+    }
+
+    private func xPosition(for element: AXUIElement) -> CGFloat {
+        var pos: AnyObject?
+        guard AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &pos) == .success,
+              let pos else {
+            return .greatestFiniteMagnitude
+        }
+
+        let value = unsafeBitCast(pos, to: AXValue.self)
+        var point = CGPoint.zero
+        AXValueGetValue(value, .cgPoint, &point)
+        return point.x
     }
 }
 

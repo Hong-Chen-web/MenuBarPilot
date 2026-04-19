@@ -1,12 +1,18 @@
 import Foundation
 import Combine
 
+struct ClaudeAttentionEvent: Equatable, Identifiable {
+    let id = UUID()
+    let sessionId: String
+}
+
 /// Main service that monitors Claude Code sessions and detects when user attention is needed.
 @MainActor
 class ClaudeMonitorService: ObservableObject {
     @Published var sessions: [ClaudeSession] = []
     @Published var needsAttention: Bool = false
     @Published var pendingCount: Int = 0
+    @Published var latestAttentionEvent: ClaudeAttentionEvent?
 
     private var fileWatchers: [String: DispatchSourceFileSystemObject] = [:]
     private var sessionDirectoryWatcher: DispatchSourceFileSystemObject?
@@ -22,7 +28,7 @@ class ClaudeMonitorService: ObservableObject {
             .appendingPathComponent(".claude/sessions")
         notificationManager.onSessionActivated = { [weak self] sessionId in
             Task { @MainActor in
-                self?.markAttentionHandled(for: sessionId)
+                self?.activateSession(sessionId: sessionId)
             }
         }
     }
@@ -72,6 +78,14 @@ class ClaudeMonitorService: ObservableObject {
         sessionDirectoryWatcher = nil
         pollingTimer?.invalidate()
         pollingTimer = nil
+    }
+
+    func clearSessions() {
+        sessions.removeAll()
+        acknowledgedAttentionSessionIDs.removeAll()
+        pendingCount = 0
+        needsAttention = false
+        latestAttentionEvent = nil
     }
 
     // MARK: - Session Discovery
@@ -181,7 +195,10 @@ class ClaudeMonitorService: ObservableObject {
         let before = sessions.count
         sessions.removeAll { session in
             let dead = !session.isProcessAlive
-            if dead { log("  removing dead session: pid=\(session.pid) cwd=\(session.cwd)") }
+            if dead {
+                removeSessionArtifacts(sessionId: session.id)
+                log("  removing dead session: pid=\(session.pid) cwd=\(session.cwd)")
+            }
             return dead
         }
         log("handleSessionsDirectoryChange: sessions after=\(sessions.count) (removed \(before - sessions.count))")
@@ -272,6 +289,7 @@ class ClaudeMonitorService: ObservableObject {
                 body: reasonForState(newState) + " in \(session.cwd)",
                 sessionId: session.id
             )
+            latestAttentionEvent = ClaudeAttentionEvent(sessionId: session.id)
         }
 
         updateAttentionState()
@@ -301,6 +319,15 @@ class ClaudeMonitorService: ObservableObject {
         log("markAttentionHandled: sessionId=\(sessionId.prefix(8))...")
     }
 
+    func activateSession(sessionId: String) {
+        markAttentionHandled(for: sessionId)
+        guard let session = sessions.first(where: { $0.id == sessionId }) else {
+            log("activateSession: sessionId=\(sessionId.prefix(8))... not found")
+            return
+        }
+        ClaudeSessionActivator.activate(session: session)
+    }
+
     // MARK: - Polling Fallback
 
     private func startPolling() {
@@ -317,7 +344,13 @@ class ClaudeMonitorService: ObservableObject {
 
         // Remove dead sessions
         let before = sessions.count
-        sessions.removeAll { !$0.isProcessAlive }
+        sessions.removeAll { session in
+            let dead = !session.isProcessAlive
+            if dead {
+                removeSessionArtifacts(sessionId: session.id)
+            }
+            return dead
+        }
         if before != sessions.count {
             log("pollSessions: removed \(before - sessions.count) dead session(s), \(sessions.count) remaining")
         }
@@ -365,6 +398,7 @@ class ClaudeMonitorService: ObservableObject {
                         body: reasonForState(newState) + " in \(sessions[i].cwd)",
                         sessionId: sessions[i].id
                     )
+                    latestAttentionEvent = ClaudeAttentionEvent(sessionId: sessions[i].id)
                 }
             }
         }
@@ -374,5 +408,12 @@ class ClaudeMonitorService: ObservableObject {
 
         let elapsed = (CFAbsoluteTimeGetCurrent() - start) * 1000
         PerfLogger.log("[POLL] pollSessions took \(String(format: "%.1f", elapsed))ms, \(sessions.count) sessions")
+    }
+
+    private func removeSessionArtifacts(sessionId: String) {
+        acknowledgedAttentionSessionIDs.remove(sessionId)
+        notificationManager.clearNotification(sessionId: sessionId)
+        fileWatchers[sessionId]?.cancel()
+        fileWatchers.removeValue(forKey: sessionId)
     }
 }

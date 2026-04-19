@@ -7,23 +7,37 @@ class ClaudeNotificationManager: NSObject, UNUserNotificationCenterDelegate {
 
     override init() {
         super.init()
-        requestNotificationPermission()
+        if UserDefaults.standard.object(forKey: "enableNotifications") as? Bool ?? true {
+            Self.requestAuthorizationIfNeeded()
+        }
         UNUserNotificationCenter.current().delegate = self
     }
 
-    private func requestNotificationPermission() {
+    static func requestAuthorizationIfNeeded() {
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, error in
             if let error = error {
-                print("Notification permission error: \(error)")
+                PerfLogger.log("[ClaudeNotification] permission error: \(error)")
+            } else {
+                PerfLogger.log("[ClaudeNotification] authorization result granted=\(granted)")
             }
         }
     }
 
     func sendNotification(title: String, body: String, sessionId: String) {
+        let defaults = UserDefaults.standard
+        guard defaults.object(forKey: "enableNotifications") as? Bool ?? true else {
+            clearNotification(sessionId: sessionId)
+            return
+        }
+
+        Self.requestAuthorizationIfNeeded()
+
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body
-        content.sound = .default
+        if defaults.object(forKey: "enableSound") as? Bool ?? true {
+            content.sound = .default
+        }
         content.userInfo = ["sessionId": sessionId]
 
         let request = UNNotificationRequest(
@@ -34,7 +48,7 @@ class ClaudeNotificationManager: NSObject, UNUserNotificationCenterDelegate {
 
         UNUserNotificationCenter.current().add(request) { error in
             if let error = error {
-                print("Failed to send notification: \(error)")
+                PerfLogger.log("[ClaudeNotification] send failed: \(error)")
             }
         }
     }
@@ -51,7 +65,17 @@ class ClaudeNotificationManager: NSObject, UNUserNotificationCenterDelegate {
         willPresent notification: UNNotification,
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
-        completionHandler([.banner, .sound])
+        let defaults = UserDefaults.standard
+        guard defaults.object(forKey: "enableNotifications") as? Bool ?? true else {
+            completionHandler([])
+            return
+        }
+
+        if defaults.object(forKey: "enableSound") as? Bool ?? true {
+            completionHandler([.banner, .sound])
+        } else {
+            completionHandler([.banner])
+        }
     }
 
     // Handle notification click - activate the terminal
@@ -65,28 +89,7 @@ class ClaudeNotificationManager: NSObject, UNUserNotificationCenterDelegate {
             DispatchQueue.main.async { [weak self] in
                 self?.onSessionActivated?(sessionId)
             }
-            activateTerminal(for: sessionId)
         }
         completionHandler()
-    }
-
-    private func activateTerminal(for sessionId: String) {
-        // Try to activate Terminal.app
-        let urls = [
-            "file:///Applications/Terminal.app",
-            "file:///Applications/iTerm.app",
-            "file:///Applications/Warp.app"
-        ]
-
-        for urlString in urls {
-            if let url = URL(string: urlString) {
-                let config = NSWorkspace.OpenConfiguration()
-                NSWorkspace.shared.openApplication(at: url, configuration: config) { _, error in
-                    if error == nil {
-                        return // Successfully activated
-                    }
-                }
-            }
-        }
     }
 }

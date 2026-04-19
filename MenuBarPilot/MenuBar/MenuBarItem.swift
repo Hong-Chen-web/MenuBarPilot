@@ -12,28 +12,11 @@ struct MenuBarItem: Identifiable, Hashable {
     var displayName: String      // AXDescription or fallback
     var capturedImage: NSImage?  // Screenshot of the actual icon
 
-    var section: MenuBarSection = .alwaysVisible
-
     func hash(into hasher: inout Hasher) {
         hasher.combine(id)
     }
 
     static func == (lhs: MenuBarItem, rhs: MenuBarItem) -> Bool {
         lhs.id == rhs.id
-    }
-}
-
-/// Sections in the menu bar for organizing icons.
-enum MenuBarSection: String, CaseIterable {
-    case alwaysVisible = "Always Visible"
-    case hidden = "Hidden"
-    case alwaysHidden = "Always Hidden"
-
-    var systemImage: String {
-        switch self {
-        case .alwaysVisible: return "eye"
-        case .hidden: return "eye.slash"
-        case .alwaysHidden: return "eye.trianglebadge.exclamationmark"
-        }
     }
 }

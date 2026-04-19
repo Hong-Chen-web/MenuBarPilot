@@ -23,6 +23,7 @@ class AppState: ObservableObject {
 
     // MARK: - Menu Bar Management
     @Published var menuBarItems: [MenuBarItem] = []
+    @Published var hasAccessibilityPermission = false
     let statusHider = StatusBarHider()
 
     // MARK: - Claude Code Monitoring
@@ -33,6 +34,8 @@ class AppState: ObservableObject {
 
     // MARK: - Settings
     @AppStorage("launchAtLogin") var launchAtLogin = false
+    @AppStorage("showMenuBarIcons") var showMenuBarIcons = true
+    @AppStorage("showClaudeMonitor") var showClaudeMonitor = true
     @AppStorage("enableNotifications") var enableNotifications = true
     @AppStorage("enableSound") var enableSound = true
 
@@ -40,8 +43,11 @@ class AppState: ObservableObject {
     let menuBarItemManager = MenuBarItemManager()
     let claudeMonitor = ClaudeMonitorService()
     var cancellables = Set<AnyCancellable>()
+    private var menuBarMonitoringActive = false
+    private var claudeMonitoringActive = false
 
     init() {
+        launchAtLogin = LaunchAtLogin.isEnabled
         setupBindings()
     }
 
@@ -49,6 +55,10 @@ class AppState: ObservableObject {
         menuBarItemManager.$discoveredItems
             .receive(on: RunLoop.main)
             .assign(to: &$menuBarItems)
+
+        menuBarItemManager.$hasAccessibilityPermission
+            .receive(on: RunLoop.main)
+            .assign(to: &$hasAccessibilityPermission)
 
         claudeMonitor.$sessions
             .receive(on: RunLoop.main)
@@ -75,15 +85,12 @@ class AppState: ObservableObject {
     }
 
     func startMonitoring() {
-        menuBarItemManager.startDiscovering()
-        claudeMonitor.startMonitoring()
-        statusHider.startHiding()
+        updateFeatureToggles()
     }
 
     func stopMonitoring() {
-        menuBarItemManager.stopDiscovering()
-        claudeMonitor.stopMonitoring()
-        statusHider.stopHiding()
+        stopMenuBarMonitoring()
+        stopClaudeMonitoring()
     }
 
     /// Temporarily show hidden icons (before activating an app).
@@ -94,5 +101,52 @@ class AppState: ObservableObject {
     /// Re-hide icons after temporary show.
     func hideMenuBarItems() {
         statusHider.reHide()
+    }
+
+    func updateFeatureToggles() {
+        if showMenuBarIcons {
+            startMenuBarMonitoring()
+        } else {
+            stopMenuBarMonitoring()
+        }
+
+        if showClaudeMonitor {
+            startClaudeMonitoring()
+        } else {
+            stopClaudeMonitoring()
+        }
+
+        if !showMenuBarIcons && activeTab == .icons {
+            activeTab = showClaudeMonitor ? .claude : .icons
+        } else if !showClaudeMonitor && activeTab == .claude {
+            activeTab = showMenuBarIcons ? .icons : .claude
+        }
+    }
+
+    private func startMenuBarMonitoring() {
+        guard !menuBarMonitoringActive else { return }
+        menuBarMonitoringActive = true
+        menuBarItemManager.startDiscovering()
+        statusHider.startHiding()
+    }
+
+    private func stopMenuBarMonitoring() {
+        guard menuBarMonitoringActive else { return }
+        menuBarMonitoringActive = false
+        menuBarItemManager.stopDiscovering()
+        statusHider.stopHiding()
+    }
+
+    private func startClaudeMonitoring() {
+        guard !claudeMonitoringActive else { return }
+        claudeMonitoringActive = true
+        claudeMonitor.startMonitoring()
+    }
+
+    private func stopClaudeMonitoring() {
+        guard claudeMonitoringActive else { return }
+        claudeMonitoringActive = false
+        claudeMonitor.stopMonitoring()
+        claudeMonitor.clearSessions()
     }
 }

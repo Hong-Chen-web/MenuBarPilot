@@ -8,12 +8,14 @@ struct MenuBarPilotApp: App {
     var body: some Scene {
         Settings {
             SettingsView()
+                .environmentObject(appDelegate.appState)
         }
     }
 }
 
 // MARK: - AppDelegate
 
+@MainActor
 class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem!
     var popover: NSPopover!
@@ -22,7 +24,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var animationFrame = 0
     private var animationTimer: Timer?
     private var globalClickMonitor: Any?
-    private var lastPendingAttentionCount = 0
 
     // MARK: - Pre-rendered animation frame cache
     /// 20 frames × 3 colors (green, orange, red) = 60 cached images
@@ -79,15 +80,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
             .store(in: &cancellables)
 
-        appState.$pendingAttentionCount
-            .removeDuplicates()
+        appState.claudeMonitor.$latestAttentionEvent
+            .compactMap { $0 }
             .receive(on: RunLoop.main)
-            .sink { [weak self] count in
+            .sink { [weak self] event in
                 guard let self else { return }
-                defer { self.lastPendingAttentionCount = count }
-
-                guard count > self.lastPendingAttentionCount else { return }
+                guard self.appState.showClaudeMonitor else { return }
                 self.appState.activeTab = .claude
+                PerfLogger.log("[ClaudeUI] auto-open popover for session \(event.sessionId.prefix(8))...")
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                     self.showPopover()
                 }

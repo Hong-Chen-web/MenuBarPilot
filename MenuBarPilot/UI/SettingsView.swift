@@ -1,6 +1,8 @@
 import SwiftUI
 
 struct SettingsView: View {
+    @EnvironmentObject var appState: AppState
+
     var body: some View {
         TabView {
             GeneralSettingsView()
@@ -23,6 +25,7 @@ struct SettingsView: View {
 }
 
 struct GeneralSettingsView: View {
+    @EnvironmentObject var appState: AppState
     @AppStorage("launchAtLogin") private var launchAtLogin = false
     @AppStorage("showMenuBarIcons") private var showMenuBarIcons = true
     @AppStorage("showClaudeMonitor") private var showClaudeMonitor = true
@@ -40,12 +43,21 @@ struct GeneralSettingsView: View {
 
             Section {
                 Toggle("Menu Bar Icons Panel", isOn: $showMenuBarIcons)
+                    .onChange(of: showMenuBarIcons) { _, _ in
+                        appState.updateFeatureToggles()
+                    }
                 Toggle("Claude Code Monitor", isOn: $showClaudeMonitor)
+                    .onChange(of: showClaudeMonitor) { _, _ in
+                        appState.updateFeatureToggles()
+                    }
             } header: {
                 Text("Features")
             }
         }
         .padding(20)
+        .onAppear {
+            launchAtLogin = LaunchAtLogin.isEnabled
+        }
     }
 }
 
@@ -57,7 +69,13 @@ struct NotificationSettingsView: View {
         Form {
             Section {
                 Toggle("Enable Notifications", isOn: $enableNotifications)
+                    .onChange(of: enableNotifications) { _, newValue in
+                        if newValue {
+                            ClaudeNotificationManager.requestAuthorizationIfNeeded()
+                        }
+                    }
                 Toggle("Play Sound", isOn: $enableSound)
+                    .disabled(!enableNotifications)
             } header: {
                 Text("Claude Code Alerts")
             }

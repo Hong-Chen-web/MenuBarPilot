@@ -12,8 +12,18 @@ class MenuBarItemManager: ObservableObject {
     private var isRefreshing = false  // prevent overlapping refreshes
 
     func startDiscovering() {
+        guard timer == nil else {
+            refreshItems()
+            return
+        }
+
         checkAccessibilityPermission()
-        refreshItems()
+        if !hasAccessibilityPermission {
+            discoveredItems = []
+            requestAccessibilityPermission()
+        } else {
+            refreshItems()
+        }
         timer = Timer.scheduledTimer(withTimeInterval: pollingInterval, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.refreshItems()
@@ -24,6 +34,7 @@ class MenuBarItemManager: ObservableObject {
     func stopDiscovering() {
         timer?.invalidate()
         timer = nil
+        discoveredItems = []
     }
 
     // MARK: - Permission
@@ -46,6 +57,10 @@ class MenuBarItemManager: ObservableObject {
         defer { isRefreshing = false }
 
         hasAccessibilityPermission = AXIsProcessTrusted()
+        guard hasAccessibilityPermission else {
+            discoveredItems = []
+            return
+        }
 
         let start = CFAbsoluteTimeGetCurrent()
 
@@ -110,9 +125,10 @@ class MenuBarItemManager: ObservableObject {
             }
 
             guard r == .success, let bar = value else { continue }
+            let barElement = unsafeBitCast(bar, to: AXUIElement.self)
 
             var children: AnyObject?
-            AXUIElementCopyAttributeValue(bar as! AXUIElement, kAXChildrenAttribute as CFString, &children)
+            AXUIElementCopyAttributeValue(barElement, kAXChildrenAttribute as CFString, &children)
             guard let kids = children as? [AXUIElement] else { continue }
 
             for kid in kids {
@@ -121,10 +137,8 @@ class MenuBarItemManager: ObservableObject {
                 var pos: AnyObject?; AXUIElementCopyAttributeValue(kid, kAXPositionAttribute as CFString, &pos)
                 var sz: AnyObject?; AXUIElementCopyAttributeValue(kid, kAXSizeAttribute as CFString, &sz)
 
-                var point = CGPoint.zero
-                if let p = pos { let v = p as! AXValue; AXValueGetValue(v, .cgPoint, &point) }
-                var size = CGSize.zero
-                if let s = sz { let v = s as! AXValue; AXValueGetValue(v, .cgSize, &size) }
+                let point = pointValue(from: pos)
+                let size = sizeValue(from: sz)
 
                 // Only keep items in the menu bar area (y between 0 and 50 in AX coords)
                 // x can be negative when pushed off screen by our hider
@@ -213,6 +227,22 @@ class MenuBarItemManager: ObservableObject {
     private func getAppIcon(for pid: pid_t) -> NSImage? {
         NSWorkspace.shared.runningApplications
             .first(where: { $0.processIdentifier == pid })?.icon
+    }
+
+    private func pointValue(from object: AnyObject?) -> CGPoint {
+        guard let object else { return .zero }
+        let value = unsafeBitCast(object, to: AXValue.self)
+        var point = CGPoint.zero
+        AXValueGetValue(value, .cgPoint, &point)
+        return point
+    }
+
+    private func sizeValue(from object: AnyObject?) -> CGSize {
+        guard let object else { return .zero }
+        let value = unsafeBitCast(object, to: AXValue.self)
+        var size = CGSize.zero
+        AXValueGetValue(value, .cgSize, &size)
+        return size
     }
 
     private func writeDebug(_ text: String) {

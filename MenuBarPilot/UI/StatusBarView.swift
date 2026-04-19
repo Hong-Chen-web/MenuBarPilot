@@ -3,22 +3,49 @@ import SwiftUI
 /// Main panel view shown in the NSPopover.
 struct StatusBarView: View {
     @EnvironmentObject var appState: AppState
+    @AppStorage("showMenuBarIcons") private var showMenuBarIcons = true
+    @AppStorage("showClaudeMonitor") private var showClaudeMonitor = true
 
     var body: some View {
         VStack(spacing: 0) {
             headerBar
-            tabBar
-            Divider()
+            if visibleTabs.count > 1 {
+                tabBar
+                Divider()
+            }
 
             Group {
-                switch appState.activeTab {
-                case .icons:
-                    IconsPanel()
-                case .claude:
-                    ClaudeStatusPanel()
+                if visibleTabs.isEmpty {
+                    Text("Enable a feature in Settings to use MenuBarPilot.")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .padding(24)
+                } else {
+                    switch appState.activeTab {
+                    case .icons:
+                        if showMenuBarIcons {
+                            IconsPanel()
+                        }
+                    case .claude:
+                        if showClaudeMonitor {
+                            ClaudeStatusPanel()
+                        }
+                    }
                 }
             }
             .frame(maxHeight: .infinity)
+        }
+    }
+
+    private var visibleTabs: [ActiveTab] {
+        ActiveTab.allCases.filter { tab in
+            switch tab {
+            case .icons:
+                return showMenuBarIcons
+            case .claude:
+                return showClaudeMonitor
+            }
         }
     }
 
@@ -62,7 +89,7 @@ struct StatusBarView: View {
 
     private var tabBar: some View {
         HStack(spacing: 0) {
-            ForEach(ActiveTab.allCases, id: \.self) { tab in
+            ForEach(visibleTabs, id: \.self) { tab in
                 Button {
                     appState.activeTab = tab
                 } label: {

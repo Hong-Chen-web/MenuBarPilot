@@ -4,6 +4,7 @@ set -e
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BUILD_DIR="$PROJECT_DIR/.build/debug"
 APP_BUNDLE="$PROJECT_DIR/build/MenuBarPilot.app"
+RESOURCE_BUNDLE="$BUILD_DIR/MenuBarPilot_MenuBarPilot.bundle"
 
 echo "Building MenuBarPilot..."
 cd "$PROJECT_DIR"
@@ -16,7 +17,10 @@ mkdir -p "$APP_BUNDLE/Contents/Resources"
 
 cp "$BUILD_DIR/MenuBarPilot" "$APP_BUNDLE/Contents/MacOS/MenuBarPilot"
 cp "$PROJECT_DIR/MenuBarPilot/Info.plist" "$APP_BUNDLE/Contents/Info.plist"
-cp -R "$PROJECT_DIR/MenuBarPilot/Assets.xcassets" "$APP_BUNDLE/Contents/Resources/Assets.xcassets"
+
+if [ -d "$RESOURCE_BUNDLE" ]; then
+    cp -R "$RESOURCE_BUNDLE" "$APP_BUNDLE/Contents/Resources/"
+fi
 
 echo "App bundle created at: $APP_BUNDLE"
 echo "To run: open \"$APP_BUNDLE\""
