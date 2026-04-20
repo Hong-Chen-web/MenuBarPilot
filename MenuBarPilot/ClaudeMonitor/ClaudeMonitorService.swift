@@ -20,6 +20,8 @@ class ClaudeMonitorService: ObservableObject {
     private let sessionsDirectory: URL
     private var fastPollingActive = false
     private var acknowledgedAttentionSessionIDs = Set<String>()
+    private let activePollingInterval: TimeInterval = 4.0
+    private let idlePollingInterval: TimeInterval = 12.0
 
     private let notificationManager = ClaudeNotificationManager()
 
@@ -53,21 +55,21 @@ class ClaudeMonitorService: ObservableObject {
         if hasActive && !fastPollingActive {
             fastPollingActive = true
             pollingTimer?.invalidate()
-            pollingTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+            pollingTimer = Timer.scheduledTimer(withTimeInterval: activePollingInterval, repeats: true) { [weak self] _ in
                 Task { @MainActor in
                     self?.pollSessions()
                 }
             }
-            log("switched to fast polling (2s)")
+            log("switched to active polling (\(activePollingInterval)s)")
         } else if !hasActive && fastPollingActive {
             fastPollingActive = false
             pollingTimer?.invalidate()
-            pollingTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
+            pollingTimer = Timer.scheduledTimer(withTimeInterval: idlePollingInterval, repeats: true) { [weak self] _ in
                 Task { @MainActor in
                     self?.pollSessions()
                 }
             }
-            log("switched to slow polling (5s)")
+            log("switched to idle polling (\(idlePollingInterval)s)")
         }
     }
 
@@ -332,7 +334,7 @@ class ClaudeMonitorService: ObservableObject {
 
     private func startPolling() {
         // Poll every 5 seconds as a fallback for file watcher misses
-        pollingTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
+        pollingTimer = Timer.scheduledTimer(withTimeInterval: idlePollingInterval, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.pollSessions()
             }

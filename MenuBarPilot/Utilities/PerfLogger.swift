@@ -5,8 +5,15 @@ import Foundation
 enum PerfLogger {
     private static let queue = DispatchQueue(label: "com.mbp.perflogger", qos: .utility)
     private static let path = "/tmp/mbp_perf.txt"
+    private static let isEnabled: Bool = {
+        if ProcessInfo.processInfo.environment["MBP_DEBUG_LOG"] == "1" {
+            return true
+        }
+        return UserDefaults.standard.bool(forKey: "debugLoggingEnabled")
+    }()
 
     static func log(_ message: String) {
+        guard isEnabled else { return }
         let timestamp = DateFormatter.iso8601Formatter.string(from: Date())
         let line = "[\(timestamp)] \(message)\n"
         let lineData = line.data(using: .utf8) ?? Data()
@@ -24,6 +31,7 @@ enum PerfLogger {
 
     /// Report current memory footprint (resident & virtual) in MB.
     static func reportMemory(context: String) {
+        guard isEnabled else { return }
         var info = mach_task_basic_info()
         var count = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info>.size) / 4
         let result = withUnsafeMutablePointer(to: &info) {

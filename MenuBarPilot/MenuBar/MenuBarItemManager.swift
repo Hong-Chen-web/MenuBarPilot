@@ -8,8 +8,10 @@ class MenuBarItemManager: ObservableObject {
     @Published var hasAccessibilityPermission = false
 
     private var timer: Timer?
-    private let pollingInterval: TimeInterval = 5.0  // increased from 3.0s to reduce contention
+    private let activePollingInterval: TimeInterval = 5.0
+    private let backgroundPollingInterval: TimeInterval = 20.0
     private var isRefreshing = false  // prevent overlapping refreshes
+    private var panelVisible = false
 
     func startDiscovering() {
         guard timer == nil else {
@@ -24,17 +26,24 @@ class MenuBarItemManager: ObservableObject {
         } else {
             refreshItems()
         }
-        timer = Timer.scheduledTimer(withTimeInterval: pollingInterval, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                self?.refreshItems()
-            }
-        }
+        scheduleTimer()
     }
 
     func stopDiscovering() {
         timer?.invalidate()
         timer = nil
         discoveredItems = []
+    }
+
+    func setPanelVisible(_ visible: Bool) {
+        guard panelVisible != visible else { return }
+        panelVisible = visible
+        if timer != nil {
+            scheduleTimer()
+        }
+        if visible {
+            refreshItems()
+        }
     }
 
     // MARK: - Permission
@@ -75,7 +84,9 @@ class MenuBarItemManager: ObservableObject {
             guard ax.pid != ownPID else { continue }
 
             let windowID = findWindowID(for: ax.position, cgWindows: cgWindows, pid: ax.pid)
-            let captured: NSImage? = windowID.flatMap { captureWindowImage(windowID: $0, frame: ax.frame) }
+            let captured: NSImage? = panelVisible
+                ? windowID.flatMap { captureWindowImage(windowID: $0, frame: ax.frame) }
+                : nil
 
             let item = MenuBarItem(
                 id: "\(ax.pid)-\(Int(ax.position.x))",
@@ -96,6 +107,16 @@ class MenuBarItemManager: ObservableObject {
 
         let elapsed = (CFAbsoluteTimeGetCurrent() - start) * 1000
         PerfLogger.log("[DISCOVERY] refreshItems took \(String(format: "%.1f", elapsed))ms, found \(items.count) items")
+    }
+
+    private func scheduleTimer() {
+        timer?.invalidate()
+        let interval = panelVisible ? activePollingInterval : backgroundPollingInterval
+        timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                self?.refreshItems()
+            }
+        }
     }
 
     // MARK: - AX Discovery

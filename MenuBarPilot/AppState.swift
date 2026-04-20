@@ -20,6 +20,7 @@ class AppState: ObservableObject {
 
     // MARK: - Tab State
     @Published var activeTab: ActiveTab = .icons
+    @Published var isPanelVisible = false
 
     // MARK: - Menu Bar Management
     @Published var menuBarItems: [MenuBarItem] = []
@@ -59,6 +60,13 @@ class AppState: ObservableObject {
         menuBarItemManager.$hasAccessibilityPermission
             .receive(on: RunLoop.main)
             .assign(to: &$hasAccessibilityPermission)
+
+        $isPanelVisible
+            .receive(on: RunLoop.main)
+            .sink { [weak self] visible in
+                self?.menuBarItemManager.setPanelVisible(visible)
+            }
+            .store(in: &cancellables)
 
         claudeMonitor.$sessions
             .receive(on: RunLoop.main)

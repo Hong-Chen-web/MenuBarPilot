@@ -24,6 +24,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var animationFrame = 0
     private var animationTimer: Timer?
     private var globalClickMonitor: Any?
+    private var shouldAnimateIcon = false
 
     // MARK: - Pre-rendered animation frame cache
     /// 20 frames × 3 colors (green, orange, red) = 60 cached images
@@ -76,6 +77,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in
+                self?.refreshAnimationState()
                 self?.updateIcon()
             }
             .store(in: &cancellables)
@@ -93,25 +95,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
             .store(in: &cancellables)
-
-        // Animation timer — 20 steps across pill, legs cycle every 4
-        var frameCounter = 0
-        animationTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                guard let self else { return }
-                let start = CFAbsoluteTimeGetCurrent()
-                self.animationFrame = (self.animationFrame + 1) % 20
-                self.updateIcon()
-                let elapsed = (CFAbsoluteTimeGetCurrent() - start) * 1000
-
-                frameCounter += 1
-                // Log every 100 frames (~15 seconds) to avoid log spam
-                if frameCounter % 100 == 0 {
-                    PerfLogger.log("[ANIM] updateIcon took \(String(format: "%.2f", elapsed))ms (frame #\(frameCounter))")
-                    PerfLogger.reportMemory(context: "animation-tick")
-                }
-            }
-        }
+        refreshAnimationState()
     }
 
     @objc private func togglePopover() {
@@ -127,6 +111,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             NSEvent.removeMonitor(monitor)
             globalClickMonitor = nil
         }
+        appState.isPanelVisible = false
+        refreshAnimationState()
         popover.performClose(nil)
     }
 
@@ -138,8 +124,33 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self?.closePopover()
         }
 
+        appState.isPanelVisible = true
+        refreshAnimationState()
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         popover.contentViewController?.view.window?.becomeKey()
+    }
+
+    private func refreshAnimationState() {
+        let shouldAnimate = appState.claudeIsWorking || appState.claudeNeedsAttention || appState.isPanelVisible
+        guard shouldAnimate != shouldAnimateIcon else { return }
+
+        shouldAnimateIcon = shouldAnimate
+        animationTimer?.invalidate()
+        animationTimer = nil
+
+        guard shouldAnimate else {
+            animationFrame = 0
+            updateIcon()
+            return
+        }
+
+        animationTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                self.animationFrame = (self.animationFrame + 1) % 20
+                self.updateIcon()
+            }
+        }
     }
 
     // MARK: - Custom Robot Icon

@@ -2,6 +2,12 @@ import Foundation
 
 /// Parses Claude Code session JSONL log files to determine state.
 struct SessionLogParser {
+    private static let maxReadBytes = 64 * 1024
+    private static let iso8601Formatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
 
     /// Represents a parsed line from the JSONL log
     struct LogEntry {
@@ -44,9 +50,7 @@ struct SessionLogParser {
             self.isToolResult = json["toolUseResult"] != nil
 
             if let ts = json["timestamp"] as? String {
-                let formatter = ISO8601DateFormatter()
-                formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-                self.timestamp = formatter.date(from: ts)
+                self.timestamp = SessionLogParser.iso8601Formatter.date(from: ts)
             } else {
                 self.timestamp = nil
             }
@@ -55,7 +59,7 @@ struct SessionLogParser {
 
     /// Parse the last N entries from a JSONL file
     static func parseLastEntries(from filePath: String, count: Int = 50) -> [LogEntry] {
-        guard let content = try? String(contentsOfFile: filePath, encoding: .utf8) else {
+        guard let content = readTailText(from: filePath, maxBytes: maxReadBytes) else {
             return []
         }
 
@@ -73,6 +77,29 @@ struct SessionLogParser {
         }
 
         return entries
+    }
+
+    private static func readTailText(from filePath: String, maxBytes: Int) -> String? {
+        guard let handle = FileHandle(forReadingAtPath: filePath) else { return nil }
+
+        do {
+            defer { try? handle.close() }
+
+            let fileSize = try handle.seekToEnd()
+            let readSize = min(UInt64(maxBytes), fileSize)
+            let startOffset = fileSize - readSize
+            try handle.seek(toOffset: startOffset)
+            let data = handle.readDataToEndOfFile()
+            guard var content = String(data: data, encoding: .utf8) else { return nil }
+
+            if startOffset > 0, let newlineIndex = content.firstIndex(of: "\n") {
+                content = String(content[content.index(after: newlineIndex)...])
+            }
+
+            return content
+        } catch {
+            return nil
+        }
     }
 
     /// Determine the current state from the last entries.
