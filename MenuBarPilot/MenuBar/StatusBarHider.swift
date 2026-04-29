@@ -65,7 +65,6 @@ class StatusBarHider {
     // MARK: - Control Item (Ice pattern)
 
     private func createControlItem() {
-        // Ice uses withLength: 0 initially
         let item = NSStatusBar.system.statusItem(withLength: 0)
         item.autosaveName = "MBPHider"
 
@@ -79,51 +78,14 @@ class StatusBarHider {
         }
 
         controlItem = item
-
-        // Debug: write to file
-        var debug = "=== Control Item Created ===\n"
-        debug += "autosaveName: \(item.autosaveName ?? "nil")\n"
-        debug += "preferredPosition: \(String(describing: UserDefaults.standard.object(forKey: "NSStatusItem Preferred Position MBPHider")))\n"
-        if let w = item.button?.window {
-            debug += "window frame: \(w.frame)\n"
-        }
-        debug += "main icon preferredPosition: \(String(describing: UserDefaults.standard.object(forKey: "NSStatusItem Preferred Position MBPIcon")))\n"
-        writeDebug(debug)
     }
 
     private func expand() {
         guard let item = controlItem else { return }
-
-        // Debug: log positions before expanding
-        logMenuBarLayout()
-
         item.length = 10_000
-
-        // Debug: log positions after expanding
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            self.logMenuBarLayout()
-        }
     }
 
-    private func logMenuBarLayout() {
-        guard let button = controlItem?.button,
-              let window = button.window else { return }
-
-        var debug = "--- Layout at \(Date()) ---\n"
-        debug += "hider window frame: \(window.frame)\n"
-
-        let items = AppState.shared.menuBarItems
-        debug += "discovered items: \(items.count)\n"
-        for item in items {
-            debug += "  '\(item.displayName)' frame=\(item.frame) wid=\(item.windowID)\n"
-        }
-        writeDebug(debug)
-    }
-
-    private func writeDebug(_ text: String) {
-        PerfLogger.log("[StatusBarHider] \(text)")
-    }
-
+    
     private func collapse() {
         controlItem?.length = NSStatusItem.variableLength
     }

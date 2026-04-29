@@ -10,7 +10,10 @@ class MenuBarItemManager: ObservableObject {
     private var timer: Timer?
     private let activePollingInterval: TimeInterval = 5.0
     private let backgroundPollingInterval: TimeInterval = 20.0
-    private var isRefreshing = false  // prevent overlapping refreshes
+    private var currentRefreshID: Int?
+    private var nextRefreshID = 0
+    private var refreshRequestedWhileRunning = false
+    private var isDiscovering = false
     private var panelVisible = false
 
     func startDiscovering() {
@@ -19,6 +22,7 @@ class MenuBarItemManager: ObservableObject {
             return
         }
 
+        isDiscovering = true
         checkAccessibilityPermission()
         if !hasAccessibilityPermission {
             discoveredItems = []
@@ -30,8 +34,11 @@ class MenuBarItemManager: ObservableObject {
     }
 
     func stopDiscovering() {
+        isDiscovering = false
         timer?.invalidate()
         timer = nil
+        currentRefreshID = nil
+        refreshRequestedWhileRunning = false
         discoveredItems = []
     }
 
@@ -60,10 +67,12 @@ class MenuBarItemManager: ObservableObject {
     // MARK: - Discovery
 
     func refreshItems() {
-        // Skip if previous refresh is still running (prevents timer pile-up)
-        guard !isRefreshing else { return }
-        isRefreshing = true
-        defer { isRefreshing = false }
+        guard isDiscovering else { return }
+
+        if currentRefreshID != nil {
+            refreshRequestedWhileRunning = true
+            return
+        }
 
         hasAccessibilityPermission = AXIsProcessTrusted()
         guard hasAccessibilityPermission else {
@@ -71,42 +80,76 @@ class MenuBarItemManager: ObservableObject {
             return
         }
 
-        let start = CFAbsoluteTimeGetCurrent()
-
-        var items: [MenuBarItem] = []
-
-        let axItems = discoverViaAccessibility()
-        let cgWindows = buildCGWindowMap()
-
+        let visible = panelVisible
         let ownPID = ProcessInfo.processInfo.processIdentifier
+        nextRefreshID += 1
+        let refreshID = nextRefreshID
+        currentRefreshID = refreshID
+        refreshRequestedWhileRunning = false
 
-        for ax in axItems {
-            guard ax.pid != ownPID else { continue }
-
-            let windowID = findWindowID(for: ax.position, cgWindows: cgWindows, pid: ax.pid)
-            let captured: NSImage? = panelVisible
-                ? windowID.flatMap { captureWindowImage(windowID: $0, frame: ax.frame) }
-                : nil
-
-            let item = MenuBarItem(
-                id: "\(ax.pid)-\(Int(ax.position.x))",
-                windowID: windowID ?? 0,
-                ownerPID: ax.pid,
-                ownerName: ax.processName,
-                frame: ax.frame,
-                appName: ax.processName,
-                appIcon: getAppIcon(for: ax.pid),
-                displayName: ax.name,
-                capturedImage: captured
-            )
-            items.append(item)
+        // Snapshot app icons on main thread (NSRunningApplication.icon requires main)
+        let runningApps = NSWorkspace.shared.runningApplications
+        var appIconMap: [pid_t: NSImage] = [:]
+        for app in runningApps {
+            appIconMap[app.processIdentifier] = app.icon
         }
 
-        items.sort { $0.frame.origin.x < $1.frame.origin.x }
-        discoveredItems = items
+        // Run discovery on a background queue to avoid blocking main thread
+        DispatchQueue.global(qos: .userInteractive).async {
+            let start = CFAbsoluteTimeGetCurrent()
 
-        let elapsed = (CFAbsoluteTimeGetCurrent() - start) * 1000
-        PerfLogger.log("[DISCOVERY] refreshItems took \(String(format: "%.1f", elapsed))ms, found \(items.count) items")
+            let axItems = Self.discoverViaAccessibility()
+            let cgWindows = Self.buildCGWindowMap()
+
+            var items: [MenuBarItem] = []
+
+            for ax in axItems {
+                guard ax.pid != ownPID else { continue }
+
+                let windowID = Self.findWindowID(for: ax.position, cgWindows: cgWindows, pid: ax.pid)
+                let captured: NSImage? = visible
+                    ? windowID.flatMap { Self.captureWindowImage(windowID: $0, frame: ax.frame) }
+                    : nil
+
+                let item = MenuBarItem(
+                    id: "\(ax.pid)-\(Int(ax.position.x))",
+                    windowID: windowID ?? 0,
+                    ownerPID: ax.pid,
+                    ownerName: ax.processName,
+                    frame: ax.frame,
+                    appName: ax.processName,
+                    appIcon: appIconMap[ax.pid],
+                    displayName: ax.name,
+                    capturedImage: captured
+                )
+                items.append(item)
+            }
+
+            items.sort { $0.frame.origin.x < $1.frame.origin.x }
+
+            let elapsed = (CFAbsoluteTimeGetCurrent() - start) * 1000
+            PerfLogger.log("[DISCOVERY] refreshItems took \(String(format: "%.1f", elapsed))ms, found \(items.count) items")
+
+            // Publish results on main thread
+            DispatchQueue.main.async {
+                guard self.currentRefreshID == refreshID else { return }
+                self.currentRefreshID = nil
+                defer {
+                    if self.refreshRequestedWhileRunning && self.isDiscovering {
+                        self.refreshItems()
+                    }
+                }
+
+                guard self.isDiscovering else { return }
+
+                self.hasAccessibilityPermission = AXIsProcessTrusted()
+                guard self.hasAccessibilityPermission else {
+                    self.discoveredItems = []
+                    return
+                }
+                self.discoveredItems = items
+            }
+        }
     }
 
     private func scheduleTimer() {
@@ -131,19 +174,13 @@ class MenuBarItemManager: ObservableObject {
         let processName: String
     }
 
-    private func discoverViaAccessibility() -> [AXMenuItem] {
+    nonisolated private static func discoverViaAccessibility() -> [AXMenuItem] {
         var results: [AXMenuItem] = []
-        var appsWithMenuBar = 0
 
         for app in NSWorkspace.shared.runningApplications {
             let el = AXUIElementCreateApplication(app.processIdentifier)
             var value: AnyObject?
             let r = AXUIElementCopyAttributeValue(el, "AXExtrasMenuBar" as CFString, &value)
-
-            if r == .success, value != nil {
-                appsWithMenuBar += 1
-                writeDebug("  AXExtrasMenuBar OK: \(app.bundleIdentifier ?? "?") (\(app.localizedName ?? "?"))")
-            }
 
             guard r == .success, let bar = value else { continue }
             let barElement = unsafeBitCast(bar, to: AXUIElement.self)
@@ -188,17 +225,12 @@ class MenuBarItemManager: ObservableObject {
             }
         }
 
-        writeDebug("AX discovery: found \(results.count) items")
-        for item in results {
-            writeDebug("  '\(item.name)' pos=\(item.position) size=\(item.size) pid=\(item.pid)")
-        }
-
         return results
     }
 
     // MARK: - CGWindow Map
 
-    private func buildCGWindowMap() -> [(windowID: CGWindowID, pid: pid_t, x: CGFloat)] {
+    nonisolated private static func buildCGWindowMap() -> [(windowID: CGWindowID, pid: pid_t, x: CGFloat)] {
         var map: [(windowID: CGWindowID, pid: pid_t, x: CGFloat)] = []
 
         guard let windowList = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] else {
@@ -223,7 +255,7 @@ class MenuBarItemManager: ObservableObject {
         return map
     }
 
-    private func findWindowID(for position: CGPoint, cgWindows: [(windowID: CGWindowID, pid: pid_t, x: CGFloat)], pid: pid_t) -> CGWindowID? {
+    nonisolated private static func findWindowID(for position: CGPoint, cgWindows: [(windowID: CGWindowID, pid: pid_t, x: CGFloat)], pid: pid_t) -> CGWindowID? {
         let candidates = cgWindows.filter { $0.pid == pid }
         let best = candidates.min(by: { abs($0.x - position.x) < abs($1.x - position.x) })
         return best?.windowID
@@ -231,7 +263,7 @@ class MenuBarItemManager: ObservableObject {
 
     // MARK: - Image Capture
 
-    private func captureWindowImage(windowID: CGWindowID, frame: CGRect) -> NSImage? {
+    nonisolated private static func captureWindowImage(windowID: CGWindowID, frame: CGRect) -> NSImage? {
         let rect = CGRect(x: 0, y: 0, width: frame.width * 2, height: frame.height * 2)
         guard let cgImage = CGWindowListCreateImage(
             rect,
@@ -245,12 +277,7 @@ class MenuBarItemManager: ObservableObject {
 
     // MARK: - Helpers
 
-    private func getAppIcon(for pid: pid_t) -> NSImage? {
-        NSWorkspace.shared.runningApplications
-            .first(where: { $0.processIdentifier == pid })?.icon
-    }
-
-    private func pointValue(from object: AnyObject?) -> CGPoint {
+    nonisolated private static func pointValue(from object: AnyObject?) -> CGPoint {
         guard let object else { return .zero }
         let value = unsafeBitCast(object, to: AXValue.self)
         var point = CGPoint.zero
@@ -258,15 +285,11 @@ class MenuBarItemManager: ObservableObject {
         return point
     }
 
-    private func sizeValue(from object: AnyObject?) -> CGSize {
+    nonisolated private static func sizeValue(from object: AnyObject?) -> CGSize {
         guard let object else { return .zero }
         let value = unsafeBitCast(object, to: AXValue.self)
         var size = CGSize.zero
         AXValueGetValue(value, .cgSize, &size)
         return size
-    }
-
-    private func writeDebug(_ text: String) {
-        PerfLogger.log("[MenuBarItem] \(text)")
     }
 }

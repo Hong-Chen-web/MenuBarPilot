@@ -22,9 +22,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     let appState = AppState.shared
     private var cancellables = Set<AnyCancellable>()
     private var animationFrame = 0
-    private var animationTimer: Timer?
+    private var displayLink: CVDisplayLink?
     private var globalClickMonitor: Any?
     private var shouldAnimateIcon = false
+    private var lastAnimationTime: CFAbsoluteTime = 0
+    private let animationInterval: CFAbsoluteTime = 0.2 // 5 fps
 
     // MARK: - Pre-rendered animation frame cache
     /// 20 frames × 3 colors (green, orange, red) = 60 cached images
@@ -130,27 +132,54 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         popover.contentViewController?.view.window?.becomeKey()
     }
 
+    // MARK: - CVDisplayLink animation
+
     private func refreshAnimationState() {
         let shouldAnimate = appState.claudeIsWorking || appState.claudeNeedsAttention || appState.isPanelVisible
         guard shouldAnimate != shouldAnimateIcon else { return }
 
         shouldAnimateIcon = shouldAnimate
-        animationTimer?.invalidate()
-        animationTimer = nil
 
-        guard shouldAnimate else {
+        if shouldAnimate {
+            startDisplayLink()
+        } else {
+            stopDisplayLink()
             animationFrame = 0
             updateIcon()
-            return
         }
+    }
 
-        animationTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                guard let self else { return }
-                self.animationFrame = (self.animationFrame + 1) % 20
-                self.updateIcon()
+    private func startDisplayLink() {
+        guard displayLink == nil else { return }
+
+        var link: CVDisplayLink?
+        CVDisplayLinkCreateWithActiveCGDisplays(&link)
+        guard let newLink = link else { return }
+
+        // Store self reference for the callback
+        let selfRef = Unmanaged.passUnretained(self).toOpaque()
+
+        CVDisplayLinkSetOutputCallback(newLink, { (_, _, _, _, _, userInfo) -> CVReturn in
+            let delegate = Unmanaged<AppDelegate>.fromOpaque(userInfo!).takeUnretainedValue()
+            let now = CFAbsoluteTimeGetCurrent()
+            if now - delegate.lastAnimationTime >= delegate.animationInterval {
+                delegate.lastAnimationTime = now
+                DispatchQueue.main.async {
+                    delegate.animationFrame = (delegate.animationFrame + 1) % 20
+                    delegate.updateIcon()
+                }
             }
-        }
+            return kCVReturnSuccess
+        }, selfRef)
+
+        CVDisplayLinkStart(newLink)
+        displayLink = newLink
+    }
+
+    private func stopDisplayLink() {
+        guard let link = displayLink else { return }
+        CVDisplayLinkStop(link)
+        displayLink = nil
     }
 
     // MARK: - Custom Robot Icon

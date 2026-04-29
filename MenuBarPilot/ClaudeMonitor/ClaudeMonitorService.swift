@@ -17,6 +17,7 @@ class ClaudeMonitorService: ObservableObject {
     private var fileWatchers: [String: DispatchSourceFileSystemObject] = [:]
     private var sessionDirectoryWatcher: DispatchSourceFileSystemObject?
     private var pollingTimer: Timer?
+    private var logParseRevisions: [String: Int] = [:]
     private let sessionsDirectory: URL
     private var fastPollingActive = false
     private var acknowledgedAttentionSessionIDs = Set<String>()
@@ -85,6 +86,7 @@ class ClaudeMonitorService: ObservableObject {
     func clearSessions() {
         sessions.removeAll()
         acknowledgedAttentionSessionIDs.removeAll()
+        logParseRevisions.removeAll()
         pendingCount = 0
         needsAttention = false
         latestAttentionEvent = nil
@@ -210,7 +212,7 @@ class ClaudeMonitorService: ObservableObject {
 
     // MARK: - Session Log Watching
 
-    private func watchSessionLog(_ session: ClaudeSession) {
+    private func watchSessionLog(_ session: ClaudeSession, parseInitialState: Bool = true) {
         let logPath = session.logFilePath
         let fm = FileManager.default
 
@@ -250,52 +252,35 @@ class ClaudeMonitorService: ObservableObject {
         source.resume()
 
         // Parse initial state
-        handleLogChange(sessionId: session.id)
+        if parseInitialState {
+            handleLogChange(sessionId: session.id)
+        }
     }
 
     private func handleLogChange(sessionId: String) {
-        guard let index = sessions.firstIndex(where: { $0.id == sessionId }) else { return }
-        let session = sessions[index]
+        guard let session = sessions.first(where: { $0.id == sessionId }) else { return }
+        let revision = nextLogParseRevision(for: sessionId)
+        let logPath = session.logFilePath
+        let pid = session.pid
 
-        let entries = SessionLogParser.parseLastEntries(from: session.logFilePath, count: 50)
-        let newState = SessionLogParser.detectState(from: entries)
+        DispatchQueue.global(qos: .userInteractive).async {
+            let entries = SessionLogParser.parseLastEntries(from: logPath, count: 50)
+            let newState = SessionLogParser.detectState(from: entries)
 
-        // Log last few entries for debugging
-        let lastTypes = entries.suffix(5).map { "\($0.type)" + ($0.toolNames.isEmpty ? "" : "(\($0.toolNames.joined(separator: ",")))") }.joined(separator: " → ")
-        log("handleLogChange: pid=\(session.pid) parsed=\(entries.count) entries → \(newState.rawValue) | tail: \(lastTypes)")
+            PerfLogger.log("[ClaudeMonitor] handleLogChange: pid=\(pid) parsed=\(entries.count) entries → \(newState.rawValue) rev=\(revision)")
 
-        let oldState = session.state
-        sessions[index] = ClaudeSession(
-            id: session.id,
-            pid: session.pid,
-            cwd: session.cwd,
-            startedAt: session.startedAt,
-            kind: session.kind,
-            entrypoint: session.entrypoint,
-            state: newState,
-            lastActivity: Date(),
-            waitingReason: newState.needsAttention ? reasonForState(newState) : nil
-        )
-
-        if !newState.needsAttention {
-            acknowledgedAttentionSessionIDs.remove(session.id)
-            notificationManager.clearNotification(sessionId: session.id)
+            DispatchQueue.main.async {
+                if self.applyParsedState(
+                    sessionId: sessionId,
+                    newState: newState,
+                    revision: revision,
+                    updateLastActivity: true
+                ) {
+                    self.updateAttentionState()
+                    self.updatePollingSpeed()
+                }
+            }
         }
-
-        // Notify only on a fresh waiting cycle that hasn't already been handled.
-        if newState.needsAttention &&
-            !oldState.needsAttention &&
-            !acknowledgedAttentionSessionIDs.contains(session.id) {
-            notificationManager.sendNotification(
-                title: "Claude Code Needs Attention",
-                body: reasonForState(newState) + " in \(session.cwd)",
-                sessionId: session.id
-            )
-            latestAttentionEvent = ClaudeAttentionEvent(sessionId: session.id)
-        }
-
-        updateAttentionState()
-        updatePollingSpeed()
     }
 
     private func reasonForState(_ state: ClaudeSessionState) -> String {
@@ -305,6 +290,64 @@ class ClaudeMonitorService: ObservableObject {
         default:
             return ""
         }
+    }
+
+    private func nextLogParseRevision(for sessionId: String) -> Int {
+        let nextRevision = (logParseRevisions[sessionId] ?? 0) + 1
+        logParseRevisions[sessionId] = nextRevision
+        return nextRevision
+    }
+
+    @discardableResult
+    private func applyParsedState(
+        sessionId: String,
+        newState: ClaudeSessionState,
+        revision: Int,
+        updateLastActivity: Bool
+    ) -> Bool {
+        guard logParseRevisions[sessionId] == revision else {
+            log("discarding stale parse result: sessionId=\(sessionId.prefix(8))... rev=\(revision)")
+            return false
+        }
+        guard let idx = sessions.firstIndex(where: { $0.id == sessionId }) else { return false }
+
+        let session = sessions[idx]
+        let previousState = session.state
+        let waitingReason = newState.needsAttention ? reasonForState(newState) : nil
+        let shouldUpdateActivity = updateLastActivity || previousState != newState
+        let lastActivity = shouldUpdateActivity ? Date() : session.lastActivity
+
+        if previousState != newState || shouldUpdateActivity || session.waitingReason != waitingReason {
+            sessions[idx] = ClaudeSession(
+                id: session.id,
+                pid: session.pid,
+                cwd: session.cwd,
+                startedAt: session.startedAt,
+                kind: session.kind,
+                entrypoint: session.entrypoint,
+                state: newState,
+                lastActivity: lastActivity,
+                waitingReason: waitingReason
+            )
+        }
+
+        if !newState.needsAttention {
+            acknowledgedAttentionSessionIDs.remove(session.id)
+            notificationManager.clearNotification(sessionId: session.id)
+        }
+
+        if newState.needsAttention &&
+            !previousState.needsAttention &&
+            !acknowledgedAttentionSessionIDs.contains(session.id) {
+            notificationManager.sendNotification(
+                title: "Claude Code Needs Attention",
+                body: reasonForState(newState) + " in \(session.cwd)",
+                sessionId: session.id
+            )
+            latestAttentionEvent = ClaudeAttentionEvent(sessionId: session.id)
+        }
+
+        return true
     }
 
     // MARK: - Attention State
@@ -357,63 +400,55 @@ class ClaudeMonitorService: ObservableObject {
             log("pollSessions: removed \(before - sessions.count) dead session(s), \(sessions.count) remaining")
         }
 
-        // Re-discover sessions to catch any that were missed (e.g. file was being written when first detected)
+        // Re-discover sessions to catch any that were missed
         discoverExistingSessions()
 
-        // Re-check session logs
-        for i in sessions.indices {
-            let entries = SessionLogParser.parseLastEntries(from: sessions[i].logFilePath, count: 20)
-            let newState = SessionLogParser.detectState(from: entries)
+        let snapshot = sessions.map { session in
+            (
+                id: session.id,
+                path: session.logFilePath,
+                revision: nextLogParseRevision(for: session.id)
+            )
+        }
 
-            // Retry file watcher setup if the log file now exists but wasn't watched before
-            if fileWatchers[sessions[i].id] == nil {
-                let fm = FileManager.default
-                if fm.fileExists(atPath: sessions[i].logFilePath) {
-                    watchSessionLog(sessions[i])
-                }
-            }
-
-            if sessions[i].state != newState {
-                let oldState = sessions[i].state
-                sessions[i] = ClaudeSession(
-                    id: sessions[i].id,
-                    pid: sessions[i].pid,
-                    cwd: sessions[i].cwd,
-                    startedAt: sessions[i].startedAt,
-                    kind: sessions[i].kind,
-                    entrypoint: sessions[i].entrypoint,
-                    state: newState,
-                    lastActivity: Date(),
-                    waitingReason: newState.needsAttention ? reasonForState(newState) : nil
-                )
-
-                if !newState.needsAttention {
-                    acknowledgedAttentionSessionIDs.remove(sessions[i].id)
-                    notificationManager.clearNotification(sessionId: sessions[i].id)
-                }
-
-                if newState.needsAttention &&
-                    !oldState.needsAttention &&
-                    !acknowledgedAttentionSessionIDs.contains(sessions[i].id) {
-                    notificationManager.sendNotification(
-                        title: "Claude Code Needs Attention",
-                        body: reasonForState(newState) + " in \(sessions[i].cwd)",
-                        sessionId: sessions[i].id
-                    )
-                    latestAttentionEvent = ClaudeAttentionEvent(sessionId: sessions[i].id)
-                }
+        for item in snapshot {
+            if fileWatchers[item.id] == nil,
+               FileManager.default.fileExists(atPath: item.path),
+               let idx = sessions.firstIndex(where: { $0.id == item.id }) {
+                watchSessionLog(sessions[idx], parseInitialState: false)
             }
         }
 
-        updateAttentionState()
-        updatePollingSpeed()
+        DispatchQueue.global(qos: .userInteractive).async {
+            var updates: [(id: String, newState: ClaudeSessionState, revision: Int)] = []
+            for item in snapshot {
+                let entries = SessionLogParser.parseLastEntries(from: item.path, count: 20)
+                let newState = SessionLogParser.detectState(from: entries)
+                updates.append((id: item.id, newState: newState, revision: item.revision))
+            }
 
-        let elapsed = (CFAbsoluteTimeGetCurrent() - start) * 1000
-        PerfLogger.log("[POLL] pollSessions took \(String(format: "%.1f", elapsed))ms, \(sessions.count) sessions")
+            DispatchQueue.main.async {
+                for update in updates {
+                    _ = self.applyParsedState(
+                        sessionId: update.id,
+                        newState: update.newState,
+                        revision: update.revision,
+                        updateLastActivity: false
+                    )
+                }
+
+                self.updateAttentionState()
+                self.updatePollingSpeed()
+
+                let elapsed = (CFAbsoluteTimeGetCurrent() - start) * 1000
+                PerfLogger.log("[POLL] pollSessions took \(String(format: "%.1f", elapsed))ms, \(self.sessions.count) sessions")
+            }
+        }
     }
 
     private func removeSessionArtifacts(sessionId: String) {
         acknowledgedAttentionSessionIDs.remove(sessionId)
+        logParseRevisions.removeValue(forKey: sessionId)
         notificationManager.clearNotification(sessionId: sessionId)
         fileWatchers[sessionId]?.cancel()
         fileWatchers.removeValue(forKey: sessionId)
