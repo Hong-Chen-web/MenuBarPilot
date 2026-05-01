@@ -78,7 +78,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 lhs.0 == rhs.0 && lhs.1 == rhs.1
             }
             .receive(on: RunLoop.main)
-            .sink { [weak self] _ in
+            .sink { [weak self] working, attention in
+                PerfLogger.log("[Icon] state changed: working=\(working) attention=\(attention)")
                 self?.refreshAnimationState()
                 self?.updateIcon()
             }
