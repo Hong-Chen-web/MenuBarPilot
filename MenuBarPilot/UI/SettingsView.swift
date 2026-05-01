@@ -1,4 +1,5 @@
 import SwiftUI
+import UserNotifications
 
 struct SettingsView: View {
     @EnvironmentObject var appState: AppState
@@ -64,6 +65,7 @@ struct GeneralSettingsView: View {
 struct NotificationSettingsView: View {
     @AppStorage("enableNotifications") private var enableNotifications = true
     @AppStorage("enableSound") private var enableSound = true
+    @State private var notificationPermissionDenied = false
 
     var body: some View {
         Form {
@@ -71,13 +73,32 @@ struct NotificationSettingsView: View {
                 Toggle("Enable Notifications", isOn: $enableNotifications)
                     .onChange(of: enableNotifications) { _, newValue in
                         if newValue {
-                            ClaudeNotificationManager.requestAuthorizationIfNeeded()
+                            AppState.shared.claudeMonitor.requestNotificationPermission()
                         }
                     }
                 Toggle("Play Sound", isOn: $enableSound)
                     .disabled(!enableNotifications)
             } header: {
                 Text("Claude Code Alerts")
+            }
+
+            if notificationPermissionDenied && enableNotifications {
+                Section {
+                    HStack {
+                        Text("Notification permission denied.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Open Settings") {
+                            if let url = URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings") {
+                                NSWorkspace.shared.open(url)
+                            }
+                        }
+                        .font(.caption)
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                    }
+                }
             }
 
             if !enableNotifications {
@@ -89,6 +110,17 @@ struct NotificationSettingsView: View {
             }
         }
         .padding(20)
+        .onAppear {
+            checkNotificationPermission()
+        }
+    }
+
+    private func checkNotificationPermission() {
+        UNUserNotificationCenter.current().getNotificationSettings { settings in
+            DispatchQueue.main.async {
+                notificationPermissionDenied = (settings.authorizationStatus == .denied)
+            }
+        }
     }
 }
 

@@ -15,14 +15,17 @@ class ClaudeMonitorService: ObservableObject {
     @Published var latestAttentionEvent: ClaudeAttentionEvent?
 
     private var fileWatchers: [String: DispatchSourceFileSystemObject] = [:]
+    private var watchedLogPaths: [String: String] = [:]  // sessionId -> path being watched
     private var sessionDirectoryWatcher: DispatchSourceFileSystemObject?
     private var pollingTimer: Timer?
     private var logParseRevisions: [String: Int] = [:]
     private let sessionsDirectory: URL
     private var fastPollingActive = false
+    private var isPolling = false
+    private var watchRetryCount: [String: Int] = [:]
     private var acknowledgedAttentionSessionIDs = Set<String>()
-    private let activePollingInterval: TimeInterval = 4.0
-    private let idlePollingInterval: TimeInterval = 12.0
+    private let activePollingInterval: TimeInterval = 3.0
+    private let idlePollingInterval: TimeInterval = 6.0
 
     private let notificationManager = ClaudeNotificationManager()
 
@@ -43,6 +46,10 @@ class ClaudeMonitorService: ObservableObject {
     }
 
     // MARK: - Start / Stop
+
+    func requestNotificationPermission() {
+        notificationManager.requestAuthorizationIfNeeded()
+    }
 
     func startMonitoring() {
         discoverExistingSessions()
@@ -113,6 +120,7 @@ class ClaudeMonitorService: ObservableObject {
         }
 
         updateAttentionState()
+        updatePollingSpeed()
     }
 
     private func loadSession(from url: URL) {
@@ -216,12 +224,23 @@ class ClaudeMonitorService: ObservableObject {
         let logPath = session.logFilePath
         let fm = FileManager.default
 
-        // If log file doesn't exist yet, skip file watcher setup.
-        // pollSessions will retry later once the file appears.
+        // If log file doesn't exist yet, retry after a short delay (max 3 attempts).
         guard fm.fileExists(atPath: logPath) else {
-            log("watchSessionLog: log file NOT found for pid=\(session.pid) at \(logPath)")
+            let attempts = (watchRetryCount[session.id] ?? 0) + 1
+            guard attempts <= 3 else {
+                watchRetryCount.removeValue(forKey: session.id)
+                return
+            }
+            watchRetryCount[session.id] = attempts
+            log("watchSessionLog: log file NOT found for pid=\(session.pid), retry \(attempts)/3 in 1s")
+            let sessionId = session.id
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+                guard let self, let session = self.sessions.first(where: { $0.id == sessionId }) else { return }
+                self.watchSessionLog(session)
+            }
             return
         }
+        watchRetryCount.removeValue(forKey: session.id)
 
         // Already watching this session's log
         guard fileWatchers[session.id] == nil else {
@@ -249,6 +268,7 @@ class ClaudeMonitorService: ObservableObject {
         }
 
         fileWatchers[session.id] = source
+        watchedLogPaths[session.id] = logPath
         source.resume()
 
         // Parse initial state
@@ -385,6 +405,11 @@ class ClaudeMonitorService: ObservableObject {
     }
 
     private func pollSessions() {
+        guard !isPolling else {
+            log("pollSessions: skipping, previous poll still in progress")
+            return
+        }
+        isPolling = true
         let start = CFAbsoluteTimeGetCurrent()
 
         // Remove dead sessions
@@ -412,7 +437,16 @@ class ClaudeMonitorService: ObservableObject {
         }
 
         for item in snapshot {
-            if fileWatchers[item.id] == nil,
+            let watchedPath = watchedLogPaths[item.id]
+            let pathChanged = watchedPath != nil && watchedPath != item.path
+            if pathChanged {
+                // Log file changed (e.g. after /clear) — rebuild watcher
+                fileWatchers[item.id]?.cancel()
+                fileWatchers.removeValue(forKey: item.id)
+                if let idx = sessions.firstIndex(where: { $0.id == item.id }) {
+                    watchSessionLog(sessions[idx], parseInitialState: false)
+                }
+            } else if fileWatchers[item.id] == nil,
                FileManager.default.fileExists(atPath: item.path),
                let idx = sessions.firstIndex(where: { $0.id == item.id }) {
                 watchSessionLog(sessions[idx], parseInitialState: false)
@@ -439,6 +473,7 @@ class ClaudeMonitorService: ObservableObject {
 
                 self.updateAttentionState()
                 self.updatePollingSpeed()
+                self.isPolling = false
 
                 let elapsed = (CFAbsoluteTimeGetCurrent() - start) * 1000
                 PerfLogger.log("[POLL] pollSessions took \(String(format: "%.1f", elapsed))ms, \(self.sessions.count) sessions")
@@ -449,6 +484,7 @@ class ClaudeMonitorService: ObservableObject {
     private func removeSessionArtifacts(sessionId: String) {
         acknowledgedAttentionSessionIDs.remove(sessionId)
         logParseRevisions.removeValue(forKey: sessionId)
+        watchedLogPaths.removeValue(forKey: sessionId)
         notificationManager.clearNotification(sessionId: sessionId)
         fileWatchers[sessionId]?.cancel()
         fileWatchers.removeValue(forKey: sessionId)

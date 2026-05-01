@@ -26,7 +26,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var globalClickMonitor: Any?
     private var shouldAnimateIcon = false
     private var lastAnimationTime: CFAbsoluteTime = 0
-    private let animationInterval: CFAbsoluteTime = 0.2 // 5 fps
+    private var animationInterval: CFAbsoluteTime = 0.2 // 5 fps
 
     // MARK: - Pre-rendered animation frame cache
     /// 20 frames × 3 colors (green, orange, red) = 60 cached images
@@ -135,17 +135,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - CVDisplayLink animation
 
     private func refreshAnimationState() {
-        let shouldAnimate = appState.claudeIsWorking || appState.claudeNeedsAttention || appState.isPanelVisible
-        guard shouldAnimate != shouldAnimateIcon else { return }
+        let active = appState.claudeIsWorking || appState.claudeNeedsAttention || appState.isPanelVisible
 
-        shouldAnimateIcon = shouldAnimate
+        // Always animate — faster when active, slower when idle
+        animationInterval = active ? 0.2 : 0.5
 
-        if shouldAnimate {
+        if !shouldAnimateIcon {
+            shouldAnimateIcon = true
             startDisplayLink()
-        } else {
-            stopDisplayLink()
-            animationFrame = 0
-            updateIcon()
         }
     }
 

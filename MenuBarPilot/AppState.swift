@@ -93,6 +93,7 @@ class AppState: ObservableObject {
     }
 
     func startMonitoring() {
+        claudeMonitor.requestNotificationPermission()
         updateFeatureToggles()
     }
 

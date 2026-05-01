@@ -4,21 +4,23 @@ import UserNotifications
 /// Manages macOS notifications for Claude Code state changes.
 class ClaudeNotificationManager: NSObject, UNUserNotificationCenterDelegate {
     var onSessionActivated: ((String) -> Void)?
+    private var authorizationRequested = false
 
     override init() {
         super.init()
-        if UserDefaults.standard.object(forKey: "enableNotifications") as? Bool ?? true {
-            Self.requestAuthorizationIfNeeded()
-        }
         UNUserNotificationCenter.current().delegate = self
     }
 
-    static func requestAuthorizationIfNeeded() {
+    func requestAuthorizationIfNeeded() {
+        guard !authorizationRequested else { return }
+        authorizationRequested = true
+
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, error in
             if let error = error {
                 PerfLogger.log("[ClaudeNotification] permission error: \(error)")
-            } else {
-                PerfLogger.log("[ClaudeNotification] authorization result granted=\(granted)")
+            }
+            if !granted {
+                PerfLogger.log("[ClaudeNotification] permission denied — user needs to enable in System Settings > Notifications")
             }
         }
     }
@@ -30,7 +32,7 @@ class ClaudeNotificationManager: NSObject, UNUserNotificationCenterDelegate {
             return
         }
 
-        Self.requestAuthorizationIfNeeded()
+        requestAuthorizationIfNeeded()
 
         let content = UNMutableNotificationContent()
         content.title = title
