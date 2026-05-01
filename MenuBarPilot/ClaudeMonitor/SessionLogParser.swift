@@ -124,7 +124,15 @@ struct SessionLogParser {
             return detectAssistantState(last)
 
         case "user":
-            // User just sent a message or tool result — Claude is working
+            // User just answered AskUserQuestion in the same read batch
+            // — still trigger attention so the notification and red icon are not missed.
+            // The next poll will correct the state to running.
+            if meaningful.count >= 2 {
+                let prev = meaningful[meaningful.count - 2]
+                if prev.type == "assistant" && prev.toolNames.contains("AskUserQuestion") {
+                    return .waitingForInput
+                }
+            }
             return .running
 
         case "attachment":
