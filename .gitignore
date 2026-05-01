@@ -1,6 +1,11 @@
+# Build
 .build/
 build/
-.DS_Store
-*.xcodeproj/xcuserdata/
 .swiftpm/
+
+# macOS
+.DS_Store
+*.xcodeproj/
+
+# Debug
 /tmp/
