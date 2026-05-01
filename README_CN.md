@@ -4,6 +4,15 @@
 
 ## 功能
 
+### 动画菜单栏图标
+一个小机器人在药丸里跑来跑去，根据会话状态自动变色：
+
+| 空闲（绿色） | 工作中（橙色） | 需要你操作（红色） |
+|:---:|:---:|:---:|
+| ![空闲](screenshots/menubar-pill-idle.png) | ![工作中](screenshots/menubar-pill-running.png) | ![需要操作](screenshots/menubar-pill-attention.png) |
+
+机器人始终在跑动 — 空闲时慢速（2fps），工作时加速（5fps）。
+
 ### 菜单栏图标管理
 - 通过辅助功能 API（Accessibility API）发现所有第三方菜单栏图标
 - 隐藏/显示图标（采用与 [Ice](https://github.com/jordanbaird/Ice) 相同的技术）
@@ -18,10 +27,6 @@
   - **等待输入（Awaiting Input）** — Claude 弹出了选项（1、2、3）等待你选择
 - **仅当 Claude 弹出 `AskUserQuestion` 选项时**才会发送 macOS 通知，不会误打扰
 - 点击会话行可直接跳转到对应的终端窗口
-
-### 动画菜单栏图标
-- 一个小机器人在药丸里跑来跑去，腿部有奔跑动画
-- 根据会话状态自动变色：绿色（空闲）→ 橙色（工作中）→ 红色（需要你操作）
 
 ## 系统要求
 

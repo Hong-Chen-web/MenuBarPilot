@@ -4,6 +4,15 @@ A macOS menu bar app for managing third-party icons and monitoring Claude Code s
 
 ## Features
 
+### Animated Menu Bar Icon
+A tiny robot running inside a pill, with color-coded states:
+
+| Idle (Green) | Working (Orange) | Needs Attention (Red) |
+|:---:|:---:|:---:|
+| ![Idle](screenshots/menubar-pill-idle.png) | ![Running](screenshots/menubar-pill-running.png) | ![Attention](screenshots/menubar-pill-attention.png) |
+
+The robot always animates — slower when idle (2 fps), faster when Claude is working (5 fps).
+
 ### Menu Bar Icon Management
 - Discover all third-party menu bar icons via Accessibility API
 - Hide/unhide icons (uses the same technique as [Ice](https://github.com/jordanbaird/Ice))
@@ -18,10 +27,6 @@ A macOS menu bar app for managing third-party icons and monitoring Claude Code s
   - **Awaiting Input** — Claude is presenting options (1, 2, 3) for you to choose
 - Sends macOS notification **only** when Claude presents `AskUserQuestion` options
 - Click a session to jump to its terminal window
-
-### Animated Menu Bar Icon
-- Robot running across a pill, with animated legs
-- Color changes based on session state: green (idle) → orange (working) → red (needs attention)
 
 ## Requirements
 
